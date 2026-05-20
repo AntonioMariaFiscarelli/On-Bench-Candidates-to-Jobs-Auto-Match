@@ -431,7 +431,7 @@ class DataTransformation:
             .select(
                 "*",
                 call_function(
-                    "SNOWFLAKE.CORTEX.COMPLETE",
+                    "AI_COMPLETE",
                     lit(llm_model),
                     concat(
                         lit(system_prompt),
@@ -607,7 +607,7 @@ class DataTransformation:
             .select(
                 "*",
                 call_function(
-                    "SNOWFLAKE.CORTEX.COMPLETE",
+                    "AI_COMPLETE",
                     lit(llm_model),
                     concat(
                         lit(system_prompt),
@@ -792,7 +792,7 @@ class DataTransformation:
             .select(
                 "*",
                 call_function(
-                    "SNOWFLAKE.CORTEX.COMPLETE",
+                    "AI_COMPLETE",
                     lit(llm_model),
                     concat(
                         lit(system_prompt),

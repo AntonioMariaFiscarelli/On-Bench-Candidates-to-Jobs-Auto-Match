@@ -224,7 +224,7 @@ def init_vacancy_input():
 
     with col1:
         st.text_input(
-            "Inserire vacancy ID",
+            "Inserire candidate ID",
             key="vacancy_id_raw",
             help="Inserire vacancy ID per l'estrazione automatica di feature",
         )
@@ -232,7 +232,7 @@ def init_vacancy_input():
     with col2:
         st.write("") 
         st.write("")
-        st.button("Cerca per vacancy ID", on_click=search)
+        st.button("Cerca per candidate ID", on_click=search)
     
 
 
@@ -349,6 +349,23 @@ def bullhorn_fields_input():
             help="""I candidati con percentuale preferenza part-time inferiore a quella specificata verranno scartati"""
         )
 
+def onbench_fields_input():
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.text_input("CCNL", 
+                    value="Metalmeccanico", 
+                    key="ccnl",
+                    help="Esempio: Metalmeccanico")
+        
+    with col2:
+        st.text_input("Categoria legale", 
+                    value="Operaio", 
+                    key="catleg",
+                    help="Esempio: Operaio")
+
+
+
 def init_skills_input():
     col1, col2 = st.columns(2)
     with col1:
@@ -371,7 +388,10 @@ def init_skills_input():
         )
 
 def init_skills_soft_input():
-    st.session_state.skills_soft = st.text_area("Skills soft (separate da virgola)", value="")
+    st.session_state.skills_soft = st.text_area("Skills soft (separate da virgola)", 
+                                                value="Precisione, puntualità, capacità di lavorare in team", 
+                                                #key="skills_soft", 
+                                                help="Esempio: Precisione, puntualità, capacità di lavorare in team")
 
 def init_skills_languages_input():
     #st.session_state.setdefault("skills_languages_selected_mand", [])
@@ -685,17 +705,20 @@ def filter_candidates():
     return df_candidates
 
 
-st.title("🔎 Automatch")
+st.title("🔎 On Bench Priority")
 init_reset_inputs()
-st.markdown("Inserisci l'ID della vacancy per definire automaticamente i criteri di ricerca")
+st.markdown("Inserire location e distanza (km) per la ricerca geografica dei candidati.")
 init_vacancy_input()
 st.subheader("Filtri di ricerca")
-st.markdown("Modifica i criteri di ricerca per trovare i candidati ideali.")
+st.markdown("Modifica i criteri di ricerca per trovare le vacancy ideali.")
 
 init_role_loc_dist_age_input()
 st.write("")
 bullhorn_fields_input()
 st.write("")
+onbench_fields_input()
+st.write("")
+init_skills_soft_input()
 init_skills_input()
 st.write("")
 init_skills_languages_input()

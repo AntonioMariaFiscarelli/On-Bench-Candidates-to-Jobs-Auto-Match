@@ -4,11 +4,11 @@ entities:
     type: streamlit
     identifier: autoMatch_IT_app
     query_warehouse: IT_NONPROD_CTDM_COMPUTE_WH
-    main_file: app_llm.py
+    main_file: app.py
     artifacts:
-      - app_llm.py
+      - app.py
       - config/config_dev.yaml
-      - params.yaml
-      - schema.yaml
+      - config/params.yaml
+      - config/schema.yaml
       - src/*
       - environment.yml

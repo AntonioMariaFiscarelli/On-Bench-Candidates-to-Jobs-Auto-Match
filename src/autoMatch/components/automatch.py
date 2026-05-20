@@ -397,7 +397,8 @@ class Automatch:
             .with_column(
                 "skills_emb",
                 call_function(
-                    "SNOWFLAKE.CORTEX.AI_EMBED_1024",
+                    #"SNOWFLAKE.CORTEX.AI_EMBED_1024",
+                    "SNOWFLAKE.CORTEX.AI_EMBED",
                     lit("multilingual-e5-large"),
                     col("skills_clean")
                 )
@@ -405,7 +406,8 @@ class Automatch:
             .with_column(
                 "jobtitle_emb",
                 call_function(
-                    "SNOWFLAKE.CORTEX.AI_EMBED_1024",
+                    ##"SNOWFLAKE.CORTEX.AI_EMBED_1024",
+                    "SNOWFLAKE.CORTEX.AI_EMBED",
                     lit("multilingual-e5-large"),
                     col("jobtitle_clean")
                 )
