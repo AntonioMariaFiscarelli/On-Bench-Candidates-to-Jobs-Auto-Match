@@ -1,9 +1,9 @@
-from src.autoMatch.config.configuration import ConfigurationManager
-from src.autoMatch.components.data_ingestion import DataIngestion
-from src.autoMatch import logger
+from src.onBench.config.configuration import ConfigurationManager
+from src.onBench.components.data_ingestion import DataIngestion
+from src.onBench import logger
 
 import snowflake.snowpark as sp
-from src.autoMatch.utils.snowflake_utils import get_snowpark_session
+from src.onBench.utils.snowflake_utils import get_snowpark_session
 
 
 STAGE_NAME = "Data Ingestion stage"
@@ -27,13 +27,13 @@ class DataIngestionTrainingPipeline:
         df = data_ingestion.read_table_vacancy(session)
         data_ingestion.write_table(df, data_ingestion.config.vacancy.output_table)
         df = data_ingestion.clean_description_vacancy(session)
-        data_ingestion.write_table(df, data_ingestion.config.vacancy.output_table)
+        data_ingestion.write_table(df, data_ingestion.config.vacancy.output_table_cleaned)
         
         
         df = data_ingestion.read_table_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
         df = data_ingestion.clean_description_candidate(session)
-        data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
+        data_ingestion.write_table(df, data_ingestion.config.candidate.output_table_cleaned)
         
         
         """

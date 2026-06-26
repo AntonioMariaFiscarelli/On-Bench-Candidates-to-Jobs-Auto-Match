@@ -14,11 +14,11 @@ import ast
 from functools import reduce
 import operator
 
-from src.autoMatch.utils.common import haversine
-from src.autoMatch.utils.common import is_valid_number
+from src.onBench.utils.common import haversine
+from src.onBench.utils.common import is_valid_number
 
-from src.autoMatch.config.configuration import ConfigurationManager
-from src.autoMatch.components.automatch import Automatch
+from src.onBench.config.configuration import ConfigurationManager
+from src.onBench.components.automatch import Automatch
 
 
 
@@ -36,7 +36,7 @@ def get_snowpark_session_streamlit():
         return get_active_session()
     except Exception:
         # Fallback to local session creation
-        from src.autoMatch.utils.snowflake_utils import get_snowpark_session
+        from src.onBench.utils.snowflake_utils import get_snowpark_session
         return get_snowpark_session()
 
 

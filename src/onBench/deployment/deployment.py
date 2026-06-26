@@ -1,15 +1,15 @@
-from src.autoMatch import logger
+from src.onBench import logger
 
 from pathlib import Path
 
-from src.autoMatch.utils.snowflake_utils import generate_create_stage_command
+from src.onBench.utils.snowflake_utils import generate_create_stage_command
 
-from src.autoMatch.pipeline.stage_01_data_ingestion import run_data_ingestion_pipeline
-from src.autoMatch.pipeline.stage_02_data_transformation import run_data_transformation_pipeline
+from src.onBench.pipeline.stage_01_data_ingestion import run_data_ingestion_pipeline
+from src.onBench.pipeline.stage_02_data_transformation import run_data_transformation_pipeline
 
-from src.autoMatch.entity.config_entity import DeploymentConfig
+from src.onBench.entity.config_entity import DeploymentConfig
 
-from src.autoMatch.config.configuration import ConfigurationManager
+from src.onBench.config.configuration import ConfigurationManager
 
 
 

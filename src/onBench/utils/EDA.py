@@ -15,17 +15,6 @@ hv.extension('bokeh')
 import jupyter_bokeh
 from bokeh.models import HoverTool
 
-from src.utils.constants import (
-    SNOWFLAKE_ACCOUNT,
-    SNOWFLAKE_AUTHENTICATOR,
-    SNOWFLAKE_DATABASE,
-    SNOWFLAKE_PASSWORD,
-    SNOWFLAKE_ROLE,
-    SNOWFLAKE_SCHEMA,
-    SNOWFLAKE_USER,
-    SNOWFLAKE_WAREHOUSE,
-)
-
 
 
 
@@ -36,8 +25,9 @@ def general_info(df):
     print(np.round(df.isna().sum()/df.shape[0] * 100, 2))
     print("\n\nNumber of duplicated rows:")
     print(df.duplicated().sum())
-    print("\n\nCheck number of unique values for each categorical column:")
-    print(df.select_dtypes(exclude = "number").nunique())
+    print("\n\nCheck number of unique values for each categorical column (absolute and normalized w.r.t number of non-null values)):")
+    #print(df.select_dtypes(exclude = "number").nunique())
+    print(pd.concat([df.select_dtypes(exclude="number").nunique(), round(df.select_dtypes(exclude="number").nunique() / df.select_dtypes(exclude="number").count(), 2)], axis=1).rename(columns={0:"unique_count",1:"normalized_unique"}))
     print("\n\nBasic statistics for numerical columns: ")
     print(df.select_dtypes(include = "number").describe().apply(lambda s: s.apply(lambda x: format(x, 'f'))))
 

@@ -6,7 +6,7 @@ from typing import cast
 import snowflake.snowpark as sp
 
 from dotenv import load_dotenv
-from src.autoMatch.constants import SNOWFLAKE_SESSION_PARAMETERS_PATH
+from src.onBench.constants import SNOWFLAKE_SESSION_PARAMETERS_PATH
 
 def get_snowpark_session() -> sp.Session:
 

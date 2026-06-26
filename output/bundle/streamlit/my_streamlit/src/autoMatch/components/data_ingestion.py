@@ -1,11 +1,11 @@
-from src.autoMatch import logger
+from src.onBench import logger
 import pandas as pd
 from snowflake.snowpark import Row
 from snowflake.snowpark.functions import col, dateadd, current_date, lit, coalesce, when, greatest, expr, split, listagg, regexp_replace, length
 from snowflake.snowpark.types import StructType, StructField, StringType, FloatType
 
 
-from src.autoMatch.entity.config_entity import DataIngestionConfig
+from src.onBench.entity.config_entity import DataIngestionConfig
 
 class DataIngestion:
     def __init__(self, config: DataIngestionConfig):

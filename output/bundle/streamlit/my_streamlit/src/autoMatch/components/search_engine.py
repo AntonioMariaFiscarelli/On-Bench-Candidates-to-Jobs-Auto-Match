@@ -1,5 +1,5 @@
-from src.autoMatch import logger
-from src.autoMatch.entity.config_entity import SearchEngineConfig
+from src.onBench import logger
+from src.onBench.entity.config_entity import SearchEngineConfig
 from snowflake.core import Root
 
 import os

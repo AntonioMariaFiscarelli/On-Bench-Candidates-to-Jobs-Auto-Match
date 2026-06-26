@@ -1,6 +1,6 @@
-from src.autoMatch import logger
+from src.onBench import logger
 
-from src.autoMatch.entity.config_entity import DataValidationConfig
+from src.onBench.entity.config_entity import DataValidationConfig
 
 class DataValidation:
     def __init__(self, config: DataValidationConfig):

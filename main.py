@@ -1,12 +1,12 @@
-from src.autoMatch import logger
-from src.autoMatch.utils.snowflake_utils import get_snowpark_session
+from src.onBench import logger
+from src.onBench.utils.snowflake_utils import get_snowpark_session
 
-from src.autoMatch.pipeline.stage_01_data_ingestion import DataIngestionTrainingPipeline
-from src.autoMatch.pipeline.stage_02_data_transformation import DataTransformationTrainingPipeline
-from src.autoMatch.pipeline.stage_03_automatch import AutomatchTrainingPipeline
+from src.onBench.pipeline.stage_01_data_ingestion import DataIngestionTrainingPipeline
+from src.onBench.pipeline.stage_02_data_transformation import DataTransformationTrainingPipeline
+from src.onBench.pipeline.stage_03_automatch import AutomatchTrainingPipeline
 
 
-from src.autoMatch.deployment.deployment import deploy_pipeline
+from src.onBench.deployment.deployment import deploy_pipeline
 
 import logging
 logging.getLogger("snowflake").setLevel(logging.WARNING)

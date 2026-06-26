@@ -1,8 +1,8 @@
-from src.autoMatch.constants import *
-from src.autoMatch.utils.common import read_yaml, create_directories
-from src.autoMatch import logger
+from src.onBench.constants import *
+from src.onBench.utils.common import read_yaml, create_directories
+from src.onBench import logger
 
-from src.autoMatch.entity.config_entity import DataIngestionConfig, DataValidationConfig, DataTransformationConfig, SearchEngineConfig, LLMConfig, AppConfig
+from src.onBench.entity.config_entity import DataIngestionConfig, DataValidationConfig, DataTransformationConfig, SearchEngineConfig, LLMConfig, AppConfig
 
 class ConfigurationManager:
     def __init__(

@@ -1,8 +1,8 @@
-from src.autoMatch.config.configuration import ConfigurationManager
-from src.autoMatch.components.automatch import Automatch
-from src.autoMatch import logger
+from src.onBench.config.configuration import ConfigurationManager
+from src.onBench.components.automatch import Automatch
+from src.onBench import logger
 
-from src.autoMatch.utils.snowflake_utils import get_snowpark_session
+from src.onBench.utils.snowflake_utils import get_snowpark_session
 
 
 STAGE_NAME = "Automatch stage"

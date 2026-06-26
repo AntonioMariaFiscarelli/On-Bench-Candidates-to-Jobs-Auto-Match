@@ -1,6 +1,3 @@
-candidate_days: &cand_days 30
-vacancy_days: &vac_days 60
-
 languages: &langs ["Inglese", "Italiano", "Spagnolo", "Francese", "Tedesco", "Portoghese", "Cinese", "Giapponese", "Coreano", "Russo", "Arabo", "Olandese", "Svedese", "Polacco", "Turco", "Urdu", "Bangalese"]
 
 regions: &reg ["Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna", "Friuli-Venezia Giulia", "Lazio", "Liguria", "Lombardia", "Marche",
@@ -9,20 +6,61 @@ regions: &reg ["Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna"
 
 education_levels: &edu_levels ["Diploma scuola media", "Diploma scuola superiore", "Laurea triennale", "Laurea specialistica", "Dottorato/Master"]
 
+parttime_preferenza_perc: &parttime_pref [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+
 desired_locations: &des_locations ["Locale", "Regionale", "Nazionale", "Internazionale"]
 
 turno_preferenza: &turno_pref ["Mattina", "Pomeriggio", "Notte", "Fine Settimana"]
 
-parttime_preferenza_perc: &parttime_pref [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-
 data_ingestion:  
   candidate:
-    columns: ["candidateid", "first_name", "last_name", "description", "salary_low", "date_available", "will_relocate", "desired_location", "parttime_preferenza_perc", "turno_preferenza"]
-    days_prior: *cand_days
+    columns:
+      candidate: 
+        candidateid: "candidateid"
+        pb_id: "pb_id"
+        first_name: "first_name"
+        last_name: "last_name"
+        skill_set: "skills"
+        education_degree: "education"
+        degree_list: "certifications"
+        salary_low: "salary"
+        date_available: "date_available" 
+        will_relocate: "will_relocate"
+        desired_location: "desired_location"
+        parttime_preferenza_perc: "parttime_preferenza_perc"
+        turno_preferenza: "turno_preferenza"
+        description: "curriculum"
+      joborder:
+        dbjobcandno: "dbjobcandno"
+        job_site: "job_site"
+        job_first: "job_first"
+        job_intermediate: "job_intermediate"
+        job_last: "job_last"
+        start_date: "start_date"
+        end_date: "end_date"
+        parttime_perc: "parttime_perc"
+        ccnl_level: "ccnl_level"
+        legal_category: "legal_category"
+        ccnl_code: "ccnl_code"
+        ccnl_description: "ccnl_description"
+    days_prior: 30
+    days_nomission: 180
   vacancy:
-    columns: ["joborderid", "jobtitle", "citta", "regione", "salary", "data_inizio_validita",
-      "part_time_percent", "skill_list", "titoli_richiesti", "DESCRIZIONE_USO_INTERNO", "TESTO_PUBBLICAZIONE", "RICHIESTE_AGGIUNTIVE", "REQUISITI"]
-    days_prior: *vac_days
+    columns: 
+      joborderid: "joborderid"
+      jobtitle: "job_title"
+      citta: "location"
+      regione: "region"
+      salary: "salary"
+      data_inizio_validita: "date_available"
+      skill_list: "skills"
+      part_time_percent: "parttime_perc"
+      titoli_richiesti: "titoli_richiesti"
+      #descrizione_uso_interno: "descrizione_uso_interno"
+      #testo_pubblicazione: "testo_pubblicazione"
+      #richieste_aggiuntive: "richieste_aggiuntive"
+      #requisiti: "requisiti"
+    days_prior: 60
   italian_cities:
     string_columns : ["unique_identifier", "city_name", "province", "province_ext", "region", "zip"]
     numeric_columns: ["latitude", "longitude"]
@@ -31,9 +69,9 @@ data_ingestion:
   max_tokens: 200000
 
 
+
 data_transformation:
   candidate:
-    days_prior: *cand_days
     ner_columns: ["description", "chatwa"]
     ner_features : ["age", "date_of_birth", "location", "region", "country", "zip_code", "last_job", "second_last_job", "third_last_job", 
              "skills", "soft_skills", "languages", "certifications", "education"]
@@ -43,7 +81,6 @@ data_transformation:
     ner_columns: ["description"]
     ner_features: ["country", "turno_preferenza", "parttime_preferenza_perc", "skills", "languages", "education", "certifications"]
     emb_columns: ["jobtitle_emb", "skills_emb"]
-    days_prior: *cand_days
   education_levels: *edu_levels
   regions: *reg
   turno preferenza: *turno_pref

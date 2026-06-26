@@ -1,8 +1,8 @@
-from src.autoMatch.config.configuration import ConfigurationManager
-from src.autoMatch.components.data_ingestion import DataIngestion
-from src.autoMatch import logger
+from src.onBench.config.configuration import ConfigurationManager
+from src.onBench.components.data_ingestion import DataIngestion
+from src.onBench import logger
 
-from src.autoMatch.utils.snowflake_utils import get_snowpark_session
+from src.onBench.utils.snowflake_utils import get_snowpark_session
 
 
 STAGE_NAME = "Data Ingestion stage"

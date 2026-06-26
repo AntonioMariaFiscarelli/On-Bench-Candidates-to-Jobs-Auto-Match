@@ -1,13 +1,13 @@
-from src.autoMatch import logger
+from src.onBench import logger
 from snowflake.snowpark.functions import col, trim, lower, length, when, lit, trim, to_date, to_varchar, coalesce
 from snowflake.snowpark.functions import array_append, array_to_string, call_function, array_construct
 from snowflake.snowpark.types import StringType
 from snowflake.snowpark.functions import udf
 from datetime import date
 
-from src.autoMatch.utils.common import validate_string, validate_json
+from src.onBench.utils.common import validate_string, validate_json
 
-from src.autoMatch.entity.config_entity import DataTransformationConfig
+from src.onBench.entity.config_entity import DataTransformationConfig
 
 
 class DataTransformation:

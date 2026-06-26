@@ -1,4 +1,4 @@
-from src.autoMatch import logger
+from src.onBench import logger
 import pandas as pd
 from snowflake.snowpark import Row
 from snowflake.snowpark.functions import col, lit, coalesce, when, greatest, expr, split, listagg, regexp_replace
@@ -6,7 +6,7 @@ from snowflake.snowpark.functions import call_function, concat, lower, length, t
 from snowflake.snowpark.types import StructType, StructField, StringType, FloatType
 
 
-from src.autoMatch.entity.config_entity import DataIngestionConfig
+from src.onBench.entity.config_entity import DataIngestionConfig
 
 class DataIngestion:
     """

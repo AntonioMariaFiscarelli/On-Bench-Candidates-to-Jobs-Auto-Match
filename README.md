@@ -1,4 +1,4 @@
-# 🧠 Candidates-to-Jobs Auto-Match with Snowflake Cortex AI
+# 🧠 On-Bench-Candidates-to-Jobs Auto-Match with Snowflake Cortex AI
 
 This project builds an automated pipeline that extracts information from candidates' CVs and job descriptions using Snowflake Cortex AI.  
 It also implements an automatching engine that matches candidates to relevant job postings. The solution combines natural language search, structured filtering, and Snowpark to deliver intelligent and scalable matching for recruiting and talent platforms.

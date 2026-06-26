@@ -1,5 +1,5 @@
-from src.autoMatch import logger
-from src.autoMatch.entity.config_entity import LLMConfig
+from src.onBench import logger
+from src.onBench.entity.config_entity import LLMConfig
 
 from snowflake.snowpark import functions as F
 from snowflake.snowpark.functions import col, lit, coalesce
@@ -8,7 +8,7 @@ from snowflake.snowpark.functions import col, trim, lower, length, parse_json, w
 from snowflake.snowpark.types import StringType, BooleanType
 from snowflake.snowpark.functions import udf
 
-from src.autoMatch.utils.common import validate_string
+from src.onBench.utils.common import validate_string
 
 
 import json

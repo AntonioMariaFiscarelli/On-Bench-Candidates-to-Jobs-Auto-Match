@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 __version__ = "0.0.0"
 
-REPO_NAME = "Candidates-to-Jobs-Auto-Match-Cortex-AI"
+REPO_NAME = "On-Bench-Candidates-to-Jobs-Auto-Match"
 AUTHOR_USER_NAME = "AntonioMariaFiscarelli"
 SRC_REPO = "autoMatch"
 AUTHOR_EMAIL = "antoniofisk90@gmail.com"
