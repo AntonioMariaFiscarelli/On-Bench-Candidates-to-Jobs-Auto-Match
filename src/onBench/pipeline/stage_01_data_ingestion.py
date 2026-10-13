@@ -15,40 +15,46 @@ class DataIngestionTrainingPipeline:
 
 
     def main(self, session):
-
+        
         if self.deployment:
             config = ConfigurationManager(session)
         else:
             config = ConfigurationManager()
             
+        #config = ConfigurationManager() 
+        
         data_ingestion_config = config.get_data_ingestion_config()
-        data_ingestion = DataIngestion(config=data_ingestion_config)
+        domain_config = config.get_domain_config()
+        data_ingestion = DataIngestion(config=data_ingestion_config, domain_config=domain_config)
 
-        df = data_ingestion.read_table_vacancy(session)
-        data_ingestion.write_table(df, data_ingestion.config.vacancy.output_table)
-        df = data_ingestion.clean_description_vacancy(session)
-        data_ingestion.write_table(df, data_ingestion.config.vacancy.output_table_cleaned)
         
-        
+        df = data_ingestion.read_table_joborder(session)
+        data_ingestion.write_table(df, data_ingestion.config.joborder.output_table)
+        df = data_ingestion.clean_table_joborder(session)
+        data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
+
+        """
         df = data_ingestion.read_table_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
-        df = data_ingestion.clean_description_candidate(session)
-        data_ingestion.write_table(df, data_ingestion.config.candidate.output_table_cleaned)
-        
-        
+        df = data_ingestion.clean_table_candidate(session)
+        data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
+        """
+
+
         """
         df = data_ingestion.read_cities_file(session)
         data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
         df = data_ingestion.complete_cities_table(session)
         data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
         """
+    
 
 
 def run_data_ingestion_pipeline(session: sp.Session) -> None:
     STAGE_NAME = "Data Ingestion stage"
     try:
         logger.info(f">>>>>> stage {STAGE_NAME} started <<<<<<") 
-        data_ingestion = DataIngestionTrainingPipeline(deployment=True)
+        data_ingestion = DataIngestionTrainingPipeline(deployment=False) #Set to True for deployment
         data_ingestion.main(session)
         logger.info(f">>>>>> stage {STAGE_NAME} completed <<<<<<\n\nx==========x")
     except Exception as e:

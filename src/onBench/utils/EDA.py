@@ -56,13 +56,14 @@ def bar_plot(df, cat,
     else:
         ymin, ymax = np.min(counts_df['COUNT']), np.max(counts_df['COUNT'])
 
-    bars = counts_df.hvplot.bar(cat).opts(xlabel=cat, ylabel='Count', 
-                  xrotation=rotation,
-                  title='Occurrences of ' + cat,
-                  #yformatter='%.0f',
-                  fontsize={'xticks': xticks_size},
-                  ylim=(ymin, ymax),
-                  height=height, width=width)
+    bars = counts_df.hvplot.bar(cat).opts(
+        xlabel=cat, ylabel='Percentage' if normalized else 'Count', 
+        xrotation=rotation,
+        title='Occurrences of ' + cat,
+        #yformatter='%.0f',
+        fontsize={'xticks': xticks_size},
+        ylim=(ymin, ymax),
+        height=height, width=width)
     
     return bars
 

@@ -1,68 +1,94 @@
+# ============================================================
+# GLOBAL CONFIGURATION
+# ============================================================
+
 artifacts_root: artifacts_b
-
 candidate_log_table: MPG_IT_ONBENCH_CANDIDATE_LOG
-vacancy_log_table: MPG_IT_ONBENCH_JOBORDER_LOG
+joborder_log_table: MPG_IT_ONBENCH_JOBORDER_LOG
 
-data_ingestion:  
+
+# ============================================================
+# DOMAIN CONFIGURATION
+# ============================================================
+domain:
+  languages: ["Inglese", "Italiano", "Spagnolo", "Francese", "Tedesco", "Portoghese", "Cinese", "Giapponese", "Coreano", "Russo", "Arabo", "Olandese", "Svedese", "Polacco", "Turco", "Urdu", "Bangalese"]
+  regions: ["Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna", "Friuli-Venezia Giulia", "Lazio", "Liguria", "Lombardia", "Marche", "Molise", "Piemonte", "Puglia", "Sardegna", "Sicilia", "Toscana", "Trentino-Alto Adige", "Umbria", "Valle d Aosta", "Veneto"]
+  education_levels: ["Diploma scuola media", "Diploma scuola superiore", "Laurea triennale", "Laurea specialistica", "Dottorato/Master"]
+  parttime_preferenza_perc: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  desired_locations: ["Locale", "Regionale", "Nazionale", "Internazionale"]
+  turno_preferenza: ["Mattina", "Pomeriggio", "Notte", "Fine Settimana"]
+
+
+# ============================================================
+# DATA INGESTION
+# ============================================================
+data_ingestion:
   root_dir: artifacts_b/data_ingestion
   database: IT_DISCOVERY
-  schema: CONSUMER_INT_MODEL
-  candidate_tables:
+  input_schema: CONSUMER_INT_MODEL
+  output_schema: ITA_EXP_ONBENCH
+  candidate:
+    days_prior: 30
+    days_nomission: 180
     input_table: CANDIDATE_CLEANED
-    input_table_pb: PB_FTCANDIDATE_CLEANED
+    input_pb_table: PB_FTCANDIDATE_CLEANED
     output_table: MPG_IT_ONBENCH_TEST_CANDIDATE
-    output_table_cleaned: MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED
-  vacancy_tables:
+    output_cleaned_table: MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED
+  joborder:
+    days_prior: 60
     input_table: JOBORDER_CLEANED
-    input_table_pb: PB_FTJOBORDER_CLEANED
+    input_pb_table: PB_FTJOBORDER_CLEANED
     output_table: MPG_IT_ONBENCH_TEST_JOBORDER
-    output_table_cleaned: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
+    output_cleaned_table: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
   italian_cities:
     input_file: italian_cities/italian_cities.xlsx
     output_table: MPG_IT_ONBENCH_ITALIAN_CITIES_TEST
+  llm:
+    model: openai-gpt-5-mini
+    max_tokens: 200000
 
-data_transformation:  
+
+# ============================================================
+# DATA TRANSFORMATION
+# ============================================================
+data_transformation:
   root_dir: artifacts_b/data_transformation
   database: IT_DISCOVERY
-  schema: CONSUMER_INT_MODEL
-  candidate_tables:
+  schema: ITA_EXP_ONBENCH
+  candidate:
     input_table: MPG_IT_ONBENCH_TEST_CANDIDATE
-    input_table_cleaned: MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED
-    output_table_cleaned: MPG_IT_ONBENCH_TEST_CANDIDATE_FEATURES_CLEANED
+    input_cleaned_table: MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED
+    output_cleaned_table: MPG_IT_ONBENCH_TEST_CANDIDATE_FEATURES_CLEANED
     output_table: MPG_IT_ONBENCH_TEST_CANDIDATE_FEATURES
-  vacancy_tables:
+  joborder:
     input_table: MPG_IT_ONBENCH_TEST_JOBORDER
-    input_table_cleaned: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
-    output_table_cleaned: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED_FEATURES
+    input_cleaned_table: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
+    output_cleaned_table: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED_FEATURES
     output_table: MPG_IT_ONBENCH_TEST_JOBORDER_FEATURES
-  input_table_italian_cities: MPG_IT_ONBENCH_ITALIAN_CITIES_TEST
+  italian_cities:
+    input_table: MPG_IT_ONBENCH_ITALIAN_CITIES_TEST
+  llm:
+    model: openai-gpt-5-mini
 
+
+# ============================================================
+# DEPLOYMENT
+# ============================================================
 deployment:
   root_dir: artifacts_b/data_transformation
   database: IT_DISCOVERY
-  schema: CONSUMER_INT_MODEL
+  schema: ITA_EXP_ONBENCH
   warehouse: IT_NONPROD_CTDM_COMPUTE_WH
   config_dir: config
-  stage_sp: MPG_IT_ONBENCH_STAGE_SP
-  data_ingestion_sp: DataIngestionSP
-  data_transformation_sp: DataTransformationSP
-  data_ingestion_task: DataIngestionTask
-  data_transformation_task: DataTransformationTask
-
-vacancy_search_table: &vac_t_search MPG_IT_ONBENCH_VACANCY_APP_TEMP
-
-ONBENCH:
-  root_dir: artifacts_b/llm
-  database: IT_DISCOVERY
-  schema: CONSUMER_INT_MODEL
-  input_table: MPG_IT_ONBENCH_TEST_CANDIDATE_FEATURES
-  vacancy_search_table: *vac_t_search
-
-app:
-  root_dir: artifacts_b/app
-  database: IT_DISCOVERY
-  schema: CONSUMER_INT_MODEL
-  vacancy_table: MPG_IT_ONBENCH_TEST_JOBORDER_FEATURES
-  vacancy_search_table: *vac_t_search
-
-
+  stage: MPG_IT_ONBENCH_STAGE_SP
+  runtime_version: "3.10"
+  data_ingestion:
+    stored_procedure: DataIngestionSP
+    task: DataIngestionTask
+    imports: ["src"]
+    packages: ["snowflake-snowpark-python==1.15.0", "python-dotenv", "beautifulsoup4==4.12.2"]
+  data_transformation:
+    stored_procedure: DataTransformationSP
+    task: DataTransformationTask
+    imports: ["src"]
+    packages: ["snowflake-snowpark-python==1.15.0", "python-dotenv"]

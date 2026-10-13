@@ -18,10 +18,12 @@ bokeh==3.3.4
 holoviews==1.18.3
 hvplot==0.9.1
 jupyter_bokeh==3.0.7
+scipy==1.11.4
 
 # Jupyter support
 notebook
 ipykernel
+nbconvert
 
 streamlit==1.31.0
 

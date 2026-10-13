@@ -17,4 +17,4 @@ CONFIG_FILE_PATH = ROOT_PATH / "config" / f"config_{env}.yaml"
 PARAMS_FILE_PATH = ROOT_PATH / f"config/params.yaml"
 SCHEMA_FILE_PATH = ROOT_PATH / f"config/schema.yaml"
 
-STAGE_NAME = "MPG_IT_AUTOMATCH_STAGE_SP"
+STAGE_NAME = "MPG_IT_ONBENCH_STAGE_SP"

@@ -1,88 +1,116 @@
 from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Dict
 
-#####################################
+
+# ============================================================
+# GLOBAL CONFIGURATION
+# ============================================================
+@dataclass(frozen=True)
+class GlobalConfig:
+    artifacts_root: str
+    candidate_log_table: str
+    joborder_log_table: str
+
+
+# ============================================================
+# DOMAIN CONFIGURATION
+# ============================================================
+@dataclass(frozen=True)
+class DomainConfig:
+    languages: list[str]
+    regions: list[str]
+    education_levels: list[str]
+    parttime_preferenza_perc: list[int]
+    desired_locations: list[str]
+    turno_preferenza: list[str]
+
+
+# ============================================================
+# LLM CONFIGURATION
+# ============================================================
+@dataclass(frozen=True)
+class LLMConfig:
+    model: str
+    max_tokens: int | None = None
+
+
+# ============================================================
+# DATA INGESTION
+# ============================================================
 @dataclass(frozen=True)
 class CandidateIngestionConfig:
-    input_table: str
-    output_table: str
-    columns: list[str]
     days_prior: int
+    days_nomission: int
+    input_table: str
+    input_pb_table: str
+    output_table: str
+    output_cleaned_table: str
 
 @dataclass(frozen=True)
-class VacancyIngestionConfig:
-    input_table: str
-    output_table: str
-    columns: list[str]
+class JoborderIngestionConfig:
     days_prior: int
+    input_table: str
+    input_pb_table: str
+    output_table: str
+    output_cleaned_table: str
 
 @dataclass(frozen=True)
 class ItalianCitiesIngestionConfig:
     input_file: str
     output_table: str
-    string_columns: dict
-    numeric_columns: dict
 
 @dataclass(frozen=True)
 class DataIngestionConfig:
     root_dir: str
     database: str
-    schema: str
+    input_schema: str
+    output_schema: str
     candidate: CandidateIngestionConfig
-    vacancy: VacancyIngestionConfig
+    joborder: JoborderIngestionConfig
     italian_cities: ItalianCitiesIngestionConfig
-    desired_locations: dict
-    parttime_preferenza_perc: list[int]
-    max_tokens: int
-#####################################
+    llm: LLMConfig
 
 
-#####################################
+# ============================================================
+# DATA TRANSFORMATION
+# ============================================================
 @dataclass(frozen=True)
 class CandidateTransformationConfig:
     input_table: str
-    input_table_cleaned: str
-    output_table_cleaned: str
+    input_cleaned_table: str
+    output_cleaned_table: str
     output_table: str
-    days_prior: int
-    ner_columns: list[str]
-    ner_features: list[str]
-    emb_columns: list[str]
-    geo_columns: list[str]
-    candidate_log_table:str
-
 
 @dataclass(frozen=True)
-class VacancyTransformationConfig:
+class JoborderTransformationConfig:
     input_table: str
-    input_table_cleaned: str
-    output_table_cleaned: str
+    input_cleaned_table: str
+    output_cleaned_table: str
     output_table: str
-    days_prior: int
-    ner_columns: list[str]
-    ner_features: list[str]
-    emb_columns: list[str]
-    vacancy_log_table:str
+
+@dataclass(frozen=True)
+class ItalianCitiesTransformationConfig:
+    input_table: str
 
 @dataclass(frozen=True)
 class DataTransformationConfig:
     root_dir: str
     database: str
     schema: str
-
     candidate: CandidateTransformationConfig
-    vacancy: VacancyTransformationConfig
+    joborder: JoborderTransformationConfig
+    italian_cities: ItalianCitiesTransformationConfig
+    llm: LLMConfig
 
-    llm_model: str
 
-    input_table_italian_cities: str
-
-    education_levels: Dict
-    regions: List[str]
-    turno_preferenza: Dict
-    parttime_preferenza_perc: List[int]
-#####################################
+# ============================================================
+# DEPLOYMENT
+# ============================================================
+@dataclass(frozen=True)
+class PipelineDeploymentConfig:
+    stored_procedure: str
+    task: str
+    imports: list[str]
+    packages: list[str]
 
 @dataclass(frozen=True)
 class DeploymentConfig:
@@ -91,42 +119,7 @@ class DeploymentConfig:
     schema: str
     warehouse: str
     config_dir: str
-    stage_sp: str
-    data_ingestion_sp: str
-    data_transformation_sp: str
-    data_ingestion_task: str
-    data_transformation_task: str
-    candidate_log_table: str
-    vacancy_log_table: str
+    stage: str
     runtime_version: str
-    data_ingestion_imports: list[str]
-    data_ingestion_packages: list[str]
-    data_transformation_imports: list[str]
-    data_transformation_packages: list[str]
-
-
-@dataclass(frozen=True)
-class AutomatchConfig:
-    root_dir: str
-    database: str
-    schema: str
-    input_table: str
-    vacancy_search_table:str
-    columns : dict
-    llm_model : str
-    columns: dict
-    #role_mappings: dict
-    languages: list[str]
-    education_levels : dict
-    desired_locations: dict
-    turno_preferenza: dict
-    parttime_preferenza_perc: list[int]
-
-@dataclass(frozen=True)
-class AppConfig:
-    root_dir: str
-    database: str
-    schema: str
-    vacancy_table: str
-    vacancy_search_table: str
-    default_inputs: dict
+    data_ingestion: PipelineDeploymentConfig
+    data_transformation: PipelineDeploymentConfig

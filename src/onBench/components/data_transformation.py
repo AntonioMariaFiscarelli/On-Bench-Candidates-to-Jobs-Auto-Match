@@ -61,7 +61,7 @@ class DataTransformation:
 
             joined = t1.join(
                 t2,
-                on="candidateid",
+                on="candidate_id_bh",
                 how="left",
                 rsuffix="_old",
             )
@@ -78,33 +78,13 @@ class DataTransformation:
                 )
             )
 
-            joined = joined.with_column(
-                "needs_processing_wa",
-                coalesce(
-                    (
-                        col("chatwa").is_not_null()
-                        &
-                            (
-                            (col("chatwa_raw_old").is_null())
-                            | (
-                                (col("chatwa_raw") != col("chatwa_raw_old"))
-                                & (col("chatwa_raw_old") != lit("Chatwa"))
-                            )
-                        )
-                    ),
-                    lit(False)
-                )
-            )
         else:
             # If it does not exist, each row in the new candidate table must be processed
             joined = t1.with_column(
                     "needs_processing",
                     lit(True)
                     )
-            joined = joined.with_column(
-                    "needs_processing_wa",
-                    col("chatwa").is_not_null()
-                    )
+
         joined = joined.with_column("time_processing", lit(None).cast("TIMESTAMP"))
 
         return joined
@@ -129,7 +109,7 @@ class DataTransformation:
             session.table(f"{database}.{schema}.{input_table}")
             .filter(
                 ((col("description").is_not_null()) & (trim(col("description")) != "")) 
-                | ((col("jobtitle").is_not_null()) & (trim(col("jobtitle")) != ""))
+                | ((col("job_title").is_not_null()) & (trim(col("job_title")) != ""))
                 )
         )
 
@@ -147,7 +127,7 @@ class DataTransformation:
 
             joined = t1.join(
                 t2,
-                on="joborderid",
+                on="joborder_id_bh",
                 how="left",
                 rsuffix="_old",
             )
@@ -176,14 +156,13 @@ class DataTransformation:
 
         return joined
 
-    def log_processed_rows_candidate(self, session, table_name: str, nproc_cv_rows: int, nproc_wa_rows: int, curr_ts):
+    def log_processed_rows_candidate(self, session, table_name: str, nproc_cv_rows: int, curr_ts):
         """Logs data processing information for candidates
 
         Args:
             session (Session): Snowflake session
             table_name (string): name of the log table
             nproc_cv_rows (string): number of candidates for which NER is applied on parsed CV during the current stage
-            nproc_wa_rows (string): number of candidates for which NER is applied on Whatsapp conversation during the current stage
             curr_ts: timestamp at which NER is performed
         Returns:
         """
@@ -192,7 +171,6 @@ class DataTransformation:
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id INTEGER AUTOINCREMENT START 1 INCREMENT 1,
                 nproc_cv_rows INTEGER,
-                nproc_wa_rows INTEGER,
                 processed_at TIMESTAMP_NTZ
             )
         """).collect()
@@ -200,10 +178,10 @@ class DataTransformation:
         # Insert row using parameter binding
         session.sql(
             f"""
-            INSERT INTO {table_name} (nproc_cv_rows, nproc_wa_rows, processed_at)
-            SELECT ?, ?, ?
+            INSERT INTO {table_name} (nproc_cv_rows, processed_at)
+            SELECT ?, ?
             """,
-            params=[nproc_cv_rows, nproc_wa_rows, curr_ts]
+            params=[nproc_cv_rows, curr_ts]
         ).collect()
 
     def log_processed_rows_vacancy(self, session, table_name: str, nproc_rows: int, curr_ts):
@@ -233,6 +211,7 @@ class DataTransformation:
             """,
             params=[nproc_rows, curr_ts]
         ).collect()      
+
 
     def compute_steps_candidate(self, session):
         """Processes the candidates table:
@@ -585,62 +564,7 @@ class DataTransformation:
 
         return df
 
-    def apply_chatwa_extraction_candidate(self, df):
-        """
-        Reads input table cleaned
-        Performs CHATWA extraction to get CHATWA id from CANDIDATEID
-        Function returns Snowflake dataframe
-        """
 
-        input_table_cleaned = self.config.candidate.output_table_cleaned
-
-        llm_model = self.config.llm_model
-
-
-        system_prompt = f"""
-                       Assegna True se il candidato ha risposto positivamente alla domanda "Sei disponibile a lavorare nel fine settimana?" altrimenti assegna False.
-                       Rispondi solo con True o False.
-                       """
-        
-        df  = (
-            df 
-            .select(
-                "*",
-                call_function(
-                    "AI_COMPLETE",
-                    lit(llm_model),
-                    concat(
-                        lit(system_prompt),
-                        lit("\nTesto: "),
-                        col("chatwa")
-                    )
-                ).alias("turno_preferenza_weekend")
-            )
-        )
-        
-        #df = df.with_column("turno_preferenza_weekend", lit("False"))
-
-        df = df.with_column(
-            "turno_preferenza",
-            when(
-                (lower(trim(col("turno_preferenza_weekend"))) == 'true') &
-                (
-                    col("turno_preferenza").is_null() |
-                    (~array_to_string(col("turno_preferenza"), lit(",")).contains(lit("Fine Settimana")))
-                ),
-                array_append(
-                    coalesce(col("turno_preferenza"), array_construct()),
-                    lit("Fine Settimana")
-                )
-            ).otherwise(col("turno_preferenza"))
-        )
-
-        df = df.drop("turno_preferenza_weekend")
-
-        logger.info(f"CHAT WA NER on {input_table_cleaned} table successful")
-
-        return df 
-    
     def add_geo_info_candidate(self, session, df):
         """
         Reads candidate dataframe
