@@ -14,9 +14,10 @@ from snowflake.snowpark.functions import col, trim, lower, when, lit, trim, udf,
 from snowflake.snowpark.types import StringType, BooleanType
 
 import math
+import re
+
 
         
-#@ensure_annotations
 def read_yaml(path_to_yaml: Path) -> ConfigBox:
     """reads yaml file and returns
 
@@ -61,10 +62,6 @@ def read_yaml_sp(session, stage: str, path_to_yaml: Path)-> ConfigBox:
     return ConfigBox(cfg)
 
 
-
-
-
-#@ensure_annotations
 def create_directories(path_to_directories: list, verbose=True):
     """create list of directories
 
@@ -78,7 +75,6 @@ def create_directories(path_to_directories: list, verbose=True):
             logger.info(f"created directory at: {path}")
 
 
-#@ensure_annotations
 def save_json(path: Path, data: dict):
     """save json data
 
@@ -92,9 +88,6 @@ def save_json(path: Path, data: dict):
     logger.info(f"json file saved at: {path}")
 
 
-
-
-#@ensure_annotations
 def load_json(path: Path) -> ConfigBox:
     """load json files data
 
@@ -111,7 +104,6 @@ def load_json(path: Path) -> ConfigBox:
     return ConfigBox(content)
 
 
-#@ensure_annotations
 def save_bin(data: Any, path: Path):
     """save binary file
 
@@ -123,7 +115,6 @@ def save_bin(data: Any, path: Path):
     logger.info(f"binary file saved at: {path}")
 
 
-#@ensure_annotations
 def load_bin(path: Path) -> Any:
     """load binary data
 
@@ -138,8 +129,6 @@ def load_bin(path: Path) -> Any:
     return data
 
 
-
-#@ensure_annotations
 def get_size(path: Path) -> str:
     """get size in KB
 
@@ -152,7 +141,7 @@ def get_size(path: Path) -> str:
     size_in_kb = round(os.path.getsize(path)/1024)
     return f"~ {size_in_kb} KB"
 
-#@ensure_annotations
+
 def validate_string(df, column_name):
     """Validates a string column of a dataframe. Sets it to None if null, empty, contains keyqords such as "null", "none", "nan".
 
@@ -173,6 +162,7 @@ def validate_string(df, column_name):
             ).otherwise(lit(None))
         )
     return df
+
 
 def validate_json(df, json_column):
     """Validates a column of a dataframe containing a json in string format. Ensures correctness of the string and safely converts the string to a json object
@@ -233,7 +223,7 @@ def validate_json(df, json_column):
 
     return df
 
-#@ensure_annotations
+
 def is_valid_number(x):
     """Returns true if x is a number, otherwise False
 
@@ -245,6 +235,7 @@ def is_valid_number(x):
     isNumber = isinstance(x, (int, float)) and not math.isnan(x)
 
     return isNumber
+
 
 def haversine(lat_ref, lon_ref):
     """Given latitude and longitude values, computes haversine distance between these coordinates and all coordinates in the dataframe
@@ -269,3 +260,46 @@ def haversine(lat_ref, lon_ref):
     distance_km = 6371 * c  # Earth radius in km
 
     return distance_km
+
+
+
+def normalize_cap(cap):
+
+    if cap is None:
+        return None
+
+    cap = str(cap).strip()
+
+    if cap == "":
+        return None
+
+    if len(cap) > 5:
+        return None
+
+    return cap.zfill(5)
+
+
+def normalize_city(city: str) -> str:
+
+    import unicodedata
+
+    if city is None:
+        return None
+
+    city = city.strip()
+    if not city:
+        return None
+
+    # Minuscolo e normalizzazione Unicode
+    city = unicodedata.normalize("NFKD", city.casefold())
+    # Rimozione degli accenti
+    city = "".join(
+        char for char in city
+        if not unicodedata.combining(char)
+    )
+    # Punteggiatura e separatori diventano spazi
+    city = re.sub(r"[^a-z0-9]+", " ", city)
+    # Spazi multipli
+    city = re.sub(r"\s+", " ", city).strip()
+
+    return city

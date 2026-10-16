@@ -28,3 +28,6 @@ nbconvert
 streamlit==1.31.0
 
 snowflake-cli-labs
+
+#pyahocorasick==2.1.0
+

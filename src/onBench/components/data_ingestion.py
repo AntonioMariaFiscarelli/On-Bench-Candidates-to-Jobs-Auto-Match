@@ -2,11 +2,14 @@ from src.onBench import logger
 
 from snowflake.snowpark.functions import col, coalesce, lit, regexp_replace, when, greatest, length, trim, lower, udf, to_varchar
 from snowflake.snowpark.functions import expr, split, iff, concat, call_function
-from snowflake.snowpark.types import StructType, StructField, StringType, FloatType
+from snowflake.snowpark.types import StructType, StructField, StringType, FloatType, DoubleType, BooleanType, ArrayType
 from snowflake.snowpark import Row
 
 import pandas as pd
+import json
+import re
 
+from src.onBench.utils.common import normalize_cap#, normalize_city
 
 
 from src.onBench.entity.config_entity import DataIngestionConfig, DomainConfig
@@ -330,7 +333,7 @@ class DataIngestion:
             jobs_ranked_agg AS (
                 SELECT
                     db_job_cand_no,
-
+                    MAX(CASE WHEN job_rank = 'first' THEN db_jobord_no END) AS joborder_id_first,
                     MAX(CASE WHEN job_rank = 'first' THEN db_job_site END) AS job_site,
                     MAX(CASE WHEN job_rank = 'first' THEN db_job_position END) AS job_first,
                     NULLIF(
@@ -386,6 +389,7 @@ class DataIngestion:
                         'Certificazioni: ', COALESCE(cc.certifications, ''), ' | '
                     )
                 ) AS description,
+                jri.joborder_id_first,
                 jri.job_site,
                 jri.job_first,
                 jri.job_intermediate,
@@ -716,7 +720,6 @@ class DataIngestion:
             split(col("turno_preferenza"), lit(","))
         )
         
-
         
         #Partime percentage as of powerbase source. Integer value between 0 and 100
         #If missing, default value is 100
@@ -732,6 +735,18 @@ class DataIngestion:
 
         df = df.with_column("CCNL_CODE", to_varchar(col("CCNL_CODE").cast("int")))
 
+        df = df.with_column(
+            "JOB_SITE_PROVINCE",
+            call_function(
+                "REGEXP_SUBSTR",
+                col("JOB_SITE"),
+                lit(r"\(([A-Za-z]{2})\)$"),
+                lit(1),
+                lit(1),
+                lit("e"),
+                lit(1)
+            )
+        )
 
         # Trim all leading and trailing whitespaces from all string columns
         string_cols = [
@@ -742,7 +757,48 @@ class DataIngestion:
         for c in string_cols:
             df = df.with_column(c, lower(trim(col(c))))
 
+
+        def build_normalize_city_udf():
+            def normalize_city(city: str) -> str:
+
+                import unicodedata
+
+                if city is None:
+                    return None
+
+                city = city.strip()
+                if not city:
+                    return None
+
+                # Minuscolo e normalizzazione Unicode
+                city = unicodedata.normalize("NFKD", city.casefold())
+                # Rimozione degli accenti
+                city = "".join(
+                    char for char in city
+                    if not unicodedata.combining(char)
+                )
+                # Punteggiatura e separatori diventano spazi
+                city = re.sub(r"[^a-z0-9]+", " ", city)
+                # Spazi multipli
+                city = re.sub(r"\s+", " ", city).strip()
+
+                return city
+            return udf(normalize_city, return_type=StringType(), input_types=[StringType()])
         
+        normalize_city_udf = build_normalize_city_udf()
+
+        df = df.with_column(
+            "CITY",
+            normalize_city_udf(col("CITY"))
+        ) 
+        df = df.with_column(
+            "PROVINCE",
+            normalize_city_udf(col("PROVINCE"))
+        )
+        df = df.with_column(
+            "JOB_SITE_NORM",
+            normalize_city_udf(col("JOB_SITE"))
+        )
 
         #Removes very long meaningless sequences of characters, including character codes for attachments (pdf, jpg etc)
         noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
@@ -801,6 +857,45 @@ class DataIngestion:
         for c in string_cols:
             df = df.with_column(c, lower(trim(col(c))))
 
+        def build_normalize_city_udf():
+            def normalize_city(city: str) -> str:
+
+                import unicodedata
+
+                if city is None:
+                    return None
+
+                city = city.strip()
+                if not city:
+                    return None
+
+                # Minuscolo e normalizzazione Unicode
+                city = unicodedata.normalize("NFKD", city.casefold())
+                # Rimozione degli accenti
+                city = "".join(
+                    char for char in city
+                    if not unicodedata.combining(char)
+                )
+                # Punteggiatura e separatori diventano spazi
+                city = re.sub(r"[^a-z0-9]+", " ", city)
+                # Spazi multipli
+                city = re.sub(r"\s+", " ", city).strip()
+
+                return city
+            return udf(normalize_city, return_type=StringType(), input_types=[StringType()])
+        
+        normalize_city_udf = build_normalize_city_udf()
+
+        df = df.with_column(
+            "CITY",
+            normalize_city_udf(col("CITY"))
+        ) 
+        df = df.with_column(
+            "REGION",
+            normalize_city_udf(col("REGION"))
+        ) 
+
+
         #Removes very long meaningless sequences of characters
         noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
         df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
@@ -824,160 +919,297 @@ class DataIngestion:
 
         return df
 
-    def read_cities_file(self, session):
-        """Reads XLSX file containing italian cities and writes table in Snowflake
 
-        Args:
-            session (Session): Snowflake session
-
-        Returns:
-            df (Snowpark Dataframe): dataframe
+    def create_comuni_dataframe(
+        self,
+        session,
+    ):
         """
+        Reads the Italian municipalities JSON file and returns
+        a cleaned Snowpark DataFrame.
+
+        Output columns:
+            nome        STRING
+            sigla       STRING
+            cap         STRING
+            cap_list    ARRAY<STRING>
+            capoluogo   BOOLEAN
+            lat         DOUBLE
+            lng         DOUBLE
+            regione     STRING
+            provincia   STRING
+        """
+
         config = self.config
         italian_cities_file = config.italian_cities.input_file
-        string_columns = ["unique_identifier", "city_name", "province", "province_ext", "region", "zip"]
-        numeric_columns = ["latitude", "longitude"]
 
-        df = pd.read_excel(italian_cities_file, header=0)
+        with open(italian_cities_file, "r", encoding="utf-8") as f:
+            comuni = json.load(f)
 
-        #Renames columns for consistency
-        df.columns = (
-            df.columns
-            .str.strip()
-            .str.replace(" ", "_")
-            .str.replace('"', '')
-            .str.replace("'", '')
-            .str.lower()
-        )
-        df = df[string_columns + numeric_columns]
-        
-        # Converts ZIP to string (preserve leading zeros)
-        df["zip"] = df["zip"].apply(lambda x: str(int(x)).zfill(5) if pd.notnull(x) else None)
-        
-        # Converts string columns
-        for col in string_columns:
-            df[col] = df[col].astype(str).str.strip()
+        rows = []
+        for comune in comuni:
 
-        # Converts latitude and longitude to float, handle NaNs
-        for col in numeric_columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            raw_caps = comune.get("cap") or []
 
-        # Remove rows with missing city_name
-        df = df[
-            df["city_name"].notna() &  # Remove NaN and None
-            (df["city_name"].str.strip() != "") &  # Remove empty and whitespace-only strings
-            (df["city_name"].str.lower().str.strip() != "null") &  # Remove "NULL" string
-            (df["city_name"].str.lower().str.strip() != "nan")  # Remove "nan" string
-        ]
+            normalized_caps = list(dict.fromkeys(
+                normalize_cap(cap)
+                for cap in raw_caps
+            ))
 
-        #These are necessary in order to avoid columns names with quotes (e.g. "city" instead of city)
-        rows = [Row(**row) for row in df.to_dict(orient="records")]
+            normalized_caps = [
+                cap for cap in normalized_caps
+                if cap is not None
+            ]
+
+            first_cap = (
+                normalized_caps[0]
+                if len(normalized_caps) > 0
+                else None
+            )
+
+            coordinates = comune.get("coordinate") or {}
+            regione = comune.get("regione") or {}
+            provincia = comune.get("provincia") or {}
+
+            rows.append({
+                "city": comune.get("nome"),
+                "province": comune.get("sigla"),
+                "cap": first_cap,
+                "cap_list": normalized_caps,
+                "has_multiple_caps": len(normalized_caps) > 1,
+                "lat": coordinates.get("lat"),
+                "lng": coordinates.get("lng"),
+                "is_capoluogo": comune.get("capoluogo"),
+                "region": regione.get("nome"),
+                "province_ext": provincia.get("nome"),
+            })
+
+        # ------------------------------------------------------------------
+        # Schema
+        # ------------------------------------------------------------------
+
         schema = StructType([
-            StructField("unique_identifier", StringType()),
-            StructField("city_name", StringType()),
+            StructField("city", StringType()),
             StructField("province", StringType()),
-            StructField("province_ext", StringType()), 
-            StructField("region", StringType()), 
-            StructField("zip", StringType()),
-            StructField("latitude", FloatType()),
-            StructField("longitude", FloatType())
+            StructField("cap", StringType()),
+            StructField("cap_list", ArrayType(StringType())),
+            StructField("has_multiple_caps", BooleanType()),
+            StructField("lat", DoubleType()),
+            StructField("lng", DoubleType()),
+            StructField("is_capoluogo", BooleanType()),
+            StructField("region", StringType()),
+            StructField("province_ext", StringType()),
         ])
 
-        logger.info(f"XLSX file containing italian cities successfully read")
+        df = session.create_dataframe(
+            rows,
+            schema=schema
+        )
 
-        df = session.create_dataframe(rows, schema=schema)
+        def build_normalize_city_udf():
+            def normalize_city(city: str) -> str:
+
+                import unicodedata
+
+                if city is None:
+                    return None
+
+                city = city.strip()
+                if not city:
+                    return None
+
+                # Minuscolo e normalizzazione Unicode
+                city = unicodedata.normalize("NFKD", city.casefold())
+                # Rimozione degli accenti
+                city = "".join(
+                    char for char in city
+                    if not unicodedata.combining(char)
+                )
+                # Punteggiatura e separatori diventano spazi
+                city = re.sub(r"[^a-z0-9]+", " ", city)
+                # Spazi multipli
+                city = re.sub(r"\s+", " ", city).strip()
+
+                return city
+            return udf(normalize_city, return_type=StringType(), input_types=[StringType()])
+        
+        normalize_city_udf = build_normalize_city_udf()
+
+        df = df.with_column(
+            "CITY_NORMALIZED",
+            normalize_city_udf(col("CITY"))
+        )
+
+        df = df.with_column(
+            "PROVINCE_EXTS",
+            normalize_city_udf(col("PROVINCE_EXT"))
+        )
+
+        df = df.with_column(
+            "REGION",
+            normalize_city_udf(col("REGION"))
+        )
+
+        string_columns = [
+            "city",
+            "city_normalized",
+            "province",
+            "cap",
+            "region",
+            "province_ext",
+        ]
+
+        for c in string_columns:
+            cleaned = trim(
+                regexp_replace(
+                    col(c),
+                    r"\s+",
+                    " "
+                )
+            )
+
+            df = df.with_column(
+                c,
+                when(
+                    cleaned == "",
+                    lit(None)
+                ).otherwise(cleaned)
+            )
+
+        # ------------------------------------------------------------------
+        # Latitude and Longitudevalidation
+        # Latitude valid range: [-90, 90]
+        # Longitude valid range: [-180, 180]
+        # Invalid values -> NaN
+        # ------------------------------------------------------------------
+
+        df = df.with_column(
+            "lat",
+            when(
+                col("lat").is_null(),
+                lit(float("nan"))
+            ).when(
+                (col("lat") >= -90)
+                & (col("lat") <= 90),
+                col("lat")
+            ).otherwise(
+                lit(float("nan"))
+            )
+        )
+
+        df = df.with_column(
+            "lng",
+            when(
+                col("lng").is_null(),
+                lit(float("nan"))
+            ).when(
+                (col("lng") >= -180)
+                & (col("lng") <= 180),
+                col("lng")
+            ).otherwise(
+                lit(float("nan"))
+            )
+        )
 
         return df
-    
-    def complete_cities_table(self, session):
-        """Uses available information to fill latitude and longitude by prompting a LLM 
 
-        Args:
-            session (Session): Snowflake session
 
-        Returns:
-            df (Snowpark Dataframe): dataframe
-        """
+    def add_geo_info(self, session):
         config = self.config
-        output_table_italian_cities = config.italian_cities.output_table
-        llm_model = self.config.llm_model
 
-        df=session.table(output_table_italian_cities)
+        database = config.database
+        schema = config.output_schema
+        input_table = config.candidate.output_table
+        cities_input_table = config.italian_cities.output_table
 
-        missing_df = df.filter(
-            col("latitude").is_null() |
-            col("longitude").is_null() |
-            (lower(col("latitude").cast("string")) == lit("nan")) |
-            (lower(col("longitude").cast("string")) == lit("nan")) |
-            (col("latitude").cast("string") == lit("NULL")) |
-            (col("longitude").cast("string") == lit("NULL")) |
-            (~col("latitude").cast("string").rlike(r"^-?\d{1,3}\.\d{1,10}$")) |
-            (~col("longitude").cast("string").rlike(r"^-?\d{1,3}\.\d{1,10}$"))
+        # Snowpark DataFrames
+        df = session.table(f"{database}.{schema}.{input_table}")
+        df_city = session.table(f"{database}.{schema}.{cities_input_table}")
+
+        import ahocorasick
+
+        # Recupera le circa 8.000 città da Snowflake.
+        # Questa è l'unica raccolta di dati sul client.
+        cities = [
+            str(row["CITY"]).strip()
+            for row in (
+                df_city
+                .select("CITY")
+                .where(col("CITY").is_not_null())
+                .distinct()
+                .collect()
+            )
+            if str(row["CITY"]).strip()
+        ]
+
+        # Costruisce l'automa una sola volta per worker UDF.
+        #@lru_cache(maxsize=1)
+        def get_automaton():
+            import ahocorasick
+            automaton = ahocorasick.Automaton()
+
+            for city in cities:
+                automaton.add_word(city.lower(), city)
+
+            automaton.make_automaton()
+            return automaton
+
+        def estrai_city(indirizzo: str) -> str:
+            if indirizzo is None:
+                return None
+
+            indirizzo = str(indirizzo).lower()
+
+            # Rimuove la sigla provinciale finale, ad esempio (mn).
+            indirizzo = re.sub(
+                r"\s*\([a-z]{2}\)\s*$",
+                "",
+                indirizzo
+            )
+
+            automaton = get_automaton()
+            matches = []
+
+            for end_index, city in automaton.iter(indirizzo):
+                # La città memorizzata mantiene le maiuscole originali.
+                city_lower = city.lower()
+                start_index = end_index - len(city_lower) + 1
+
+                before = (
+                    indirizzo[start_index - 1]
+                    if start_index > 0
+                    else " "
+                )
+
+                after_index = end_index + 1
+                after = (
+                    indirizzo[after_index]
+                    if after_index < len(indirizzo)
+                    else " "
+                )
+
+                # Evita corrispondenze dentro altre parole.
+                if not before.isalnum() and not after.isalnum():
+                    matches.append((len(city), city))
+
+            # Preferisce il nome della città più lungo.
+            return max(matches, default=(0, None))[1]
+
+        # Registra la funzione come UDF Snowpark.
+        estrai_city_udf = udf(
+            estrai_city,
+            return_type=StringType(),
+            input_types=[StringType()],
+            packages=["pyahocorasick==2.1.0"]
         )
 
-
-        prompt = concat( 
-            lit("Restituisci la latitudine per la seguente città italiana:\n"), 
-
-            lit("Città: "), col("city_name"), lit("\n"), lit("Provincia: "), col("province_ext"), lit("\n"), lit("Regione: "), col("region"), lit("\n"), lit("Nazione: Italia\n\n"), 
-            lit("Rispondi SOLO con un numero nel formato seguente: 40.1234567)."),
-            lit("Se non conosci la latitudine della città, non restituire nulla") 
-            )
-        missing_df = missing_df.with_column("latitude",
-                            call_function(
-                                "SNOWFLAKE.CORTEX.COMPLETE",
-                                lit(llm_model),
-                                prompt
-                                )
-                            )
-
-        prompt = concat( 
-            lit("Restituisci la longitudine per la seguente città italiana:\n"), 
-            lit("Città: "), col("city_name"), lit("\n"), lit("Provincia: "), col("province"), lit("\n"), lit("Regione: "), col("region"), lit("\n"), lit("Nazione: Italia\n\n"), 
-            lit("Rispondi SOLO con un numero nel formato seguente: 10.1234567)."),
-            lit("Se non conosci la longitudine della città, non restituire nulla")  
-            )
-        missing_df = missing_df.with_column("longitude",
-                            call_function(
-                                "SNOWFLAKE.CORTEX.COMPLETE",
-                                lit(llm_model),
-                                prompt
-                                )
-                            )
-        
-        
-        #Makes sure latitude and longitude respect the correct format
-        missing_df = missing_df.with_column(
-            "latitude",
-            when(
-                col("latitude").cast("string").rlike(r"^-?\d{1,3}\.\d{1,10}$"),
-                col("latitude")
-            ).otherwise(lit(None))
-        ).with_column(
-            "longitude",
-            when(
-                col("longitude").cast("string").rlike(r"^-?\d{1,3}\.\d{1,10}$"),
-                col("longitude")
-            ).otherwise(lit(None))
-        )
-        
-
-        complete_df = df.filter(
-            ~(
-                col("latitude").is_null() |
-                col("longitude").is_null() |
-                (lower(col("latitude").cast("string")) == lit("nan")) |
-                (lower(col("longitude").cast("string")) == lit("nan")) |
-                (col("latitude").cast("string") == lit("NULL")) |
-                (col("longitude").cast("string") == lit("NULL")) |
-                (~col("latitude").cast("string").rlike(r"^-?\d{1,3}\.\d{1,10}$")) |
-                (~col("longitude").cast("string").rlike(r"^-?\d{1,3}\.\d{1,10}$"))
-            )
+        # Crea la nuova colonna senza convertire df in pandas.
+        df = df.with_column(
+            "JOB_SITE_CITY",
+            estrai_city_udf(col("JOB_SITE"))
         )
 
-        final_df = complete_df.union_by_name(missing_df)                   
-
-        return final_df 
+        return df
     
     def write_table(self, df, table_name = 'output_table'):
         """Writes dataframe in Snowflake
@@ -989,5 +1221,6 @@ class DataIngestion:
 
         df.write.save_as_table(table_name, mode="overwrite")
         logger.info(f"Table {table_name} successfully written")
+
 
 
