@@ -1,9 +1,10 @@
 from src.onBench import logger
 
 from snowflake.snowpark.functions import col, coalesce, lit, regexp_replace, when, greatest, length, trim, lower, udf, to_varchar
-from snowflake.snowpark.functions import expr, split, iff, concat, call_function
+from snowflake.snowpark.functions import expr, split, iff, concat, call_function, row_number
 from snowflake.snowpark.types import StructType, StructField, StringType, FloatType, DoubleType, BooleanType, ArrayType
-from snowflake.snowpark import Row
+from snowflake.snowpark.window import Window
+
 
 import pandas as pd
 import json
@@ -364,6 +365,7 @@ class DataIngestion:
                 cc.cap,
                 cc.city,
                 cc.province,
+                /*
                 cc.skills,
                 cc.education,
                 cc.certifications,
@@ -389,13 +391,14 @@ class DataIngestion:
                         'Certificazioni: ', COALESCE(cc.certifications, ''), ' | '
                     )
                 ) AS description,
-                jri.joborder_id_first,
+                */
+                --jri.joborder_id_first,
                 jri.job_site,
                 jri.job_first,
                 jri.job_intermediate,
                 jri.job_last,
-                jri.start_date,
-                jri.end_date,
+                --jri.start_date,
+                --jri.end_date,
                 jri.parttime_perc,
                 jri.ccnl_level,
                 jri.legal_category,
@@ -597,20 +600,23 @@ class DataIngestion:
                 city,
                 cap,
                 region,
+                /*
                 salary,
-                --data_inizio_validita,
+                data_inizio_validita,
                 skills,
-                parttime_percent,
-                titoli_richiesti,
-                descrizione_uso_interno,
-                testo_pubblicazione,
-                richieste_aggiuntive,
                 requisiti,
+                */
                 job_site,
                 ccnl_level,
                 legal_category,
                 ccnl_code,
                 ccnl_description,
+                parttime_percent,
+                /*
+                titoli_richiesti,
+                descrizione_uso_interno,
+                testo_pubblicazione,
+                richieste_aggiuntive,
                 CASE 
                     WHEN date_last_modified IS NULL AND last_status_change IS NULL THEN NULL
                     ELSE GREATEST(
@@ -639,6 +645,7 @@ class DataIngestion:
                         'REQUISITI: ', COALESCE(requisiti, '')
                     )
                 ) AS description
+                */
             FROM joborder
         """
         df = session.sql(query)
@@ -677,14 +684,8 @@ class DataIngestion:
 
         df = session.table(f"{database}.{schema}.{input_table}")  
 
-        df = df.with_column("description_raw", col("description"))
-        
-        #Desired location is set to its default values: "Locale", "Regionale", "Nazionale", "Internazionale". Only one value allowed
-        case_parts = []
-        for level in reversed(desired_locations):   # highest first
-            case_parts.append(f"WHEN DESIRED_LOCATION ILIKE '%{level}%' THEN '{level}'")
-
-        case_expr = "CASE " + " ".join(case_parts) + " ELSE NULL END"
+        """
+        #df = df.with_column("description_raw", col("description"))
 
         #Partime percentage as of bullhorn source. Recruiter is supposed to insert the value with a drow down menu with set values.
         #In reality it's more similar to a free text input where you'll find values such ash "50", "50%", "50, 60" etc
@@ -710,6 +711,14 @@ class DataIngestion:
             when(col("PARTTIME_PREFERENZA_PERC") == 0, None).otherwise(col("PARTTIME_PREFERENZA_PERC"))
         )
 
+        
+        #Desired location is set to its default values: "Locale", "Regionale", "Nazionale", "Internazionale". Only one value allowed
+        case_parts = []
+        for level in reversed(desired_locations):   # highest first
+            case_parts.append(f"WHEN DESIRED_LOCATION ILIKE '%{level}%' THEN '{level}'")
+
+        case_expr = "CASE " + " ".join(case_parts) + " ELSE NULL END"
+
         df = df.with_column(
             "DESIRED_LOCATION",
             expr(case_expr)
@@ -719,7 +728,26 @@ class DataIngestion:
             "turno_preferenza",
             split(col("turno_preferenza"), lit(","))
         )
-        
+
+
+        #Removes very long meaningless sequences of characters, including character codes for attachments (pdf, jpg etc)
+        noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
+        df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
+
+        df = self.clean_description(df, "description")
+
+        #If description is longer than max_tokens, replace it with an empty string
+        df = (
+            df
+            .with_column(
+                "description",
+                when(
+                    length(col("description")) > max_tokens,
+                    lit("")                     
+                ).otherwise(col("description"))
+            )
+        )
+        """
         
         #Partime percentage as of powerbase source. Integer value between 0 and 100
         #If missing, default value is 100
@@ -734,19 +762,6 @@ class DataIngestion:
         )
 
         df = df.with_column("CCNL_CODE", to_varchar(col("CCNL_CODE").cast("int")))
-
-        df = df.with_column(
-            "JOB_SITE_PROVINCE",
-            call_function(
-                "REGEXP_SUBSTR",
-                col("JOB_SITE"),
-                lit(r"\(([A-Za-z]{2})\)$"),
-                lit(1),
-                lit(1),
-                lit("e"),
-                lit(1)
-            )
-        )
 
         # Trim all leading and trailing whitespaces from all string columns
         string_cols = [
@@ -795,33 +810,20 @@ class DataIngestion:
             "PROVINCE",
             normalize_city_udf(col("PROVINCE"))
         )
+
+        #df = df.with_column("JOB_SITE", lit("Via Roma 10, Almenno San Bartolomeo (BG)"))   
+
         df = df.with_column(
             "JOB_SITE_NORM",
             normalize_city_udf(col("JOB_SITE"))
-        )
-
-        #Removes very long meaningless sequences of characters, including character codes for attachments (pdf, jpg etc)
-        noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
-        df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
-
-        df = self.clean_description(df, "description")
-
-        #If description is longer than max_tokens, replace it with an empty string
-        df = (
-            df
-            .with_column(
-                "description",
-                when(
-                    length(col("description")) > max_tokens,
-                    lit("")                     
-                ).otherwise(col("description"))
-            )
         )
 
         logger.info(f"Table {input_table} successfully cleaned")
 
         return df
 
+
+    
     def clean_table_joborder(self, session):
         """Feature engineering and cleaning of the joborder table:
             - Removes leading and trailing whitespaces from all string columns
@@ -846,8 +848,6 @@ class DataIngestion:
 
 
         df = session.table(f"{database}.{schema}.{input_table}")
-
-        df = df.with_column("description_raw", col("description"))
 
         string_cols = [
             f.name
@@ -896,6 +896,9 @@ class DataIngestion:
         ) 
 
 
+        """
+        df = df.with_column("description_raw", col("description"))
+
         #Removes very long meaningless sequences of characters
         noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
         df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
@@ -914,8 +917,387 @@ class DataIngestion:
                 ).otherwise(col("description"))   # keep original
             )
         )
-
+        """
         logger.info(f"Table {input_table} successfully cleaned")
+
+        return df
+
+
+    def enrich_geo_info_from_city_candidate(self, session):
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        candidate_table = config.candidate.output_cleaned_table
+        italian_cities_table = config.italian_cities.output_table
+
+        df_candidate = session.table(
+            f"{database}.{schema}.{candidate_table}"
+        )
+
+        df_cities = (
+            session.table(
+                f"{database}.{schema}.{italian_cities_table}"
+            )
+            .select(
+                col("city_normalized").alias("city_lookup"),
+                #col("cap").alias("cap_lookup"),
+                col("province").alias("province_lookup"),
+                col("province_ext").alias("province_ext_lookup"),
+                col("region").alias("region_lookup"),
+                col("lat").alias("lat_lookup"),
+                col("lng").alias("lng_lookup")
+            )
+        )
+
+        # --------------------------------------------------
+        # Exact lookup on normalized city
+        # --------------------------------------------------
+
+        lookup = (
+            df_candidate
+            .join(
+                df_cities,
+                col("city") == col("city_lookup"),
+                "left"
+            )
+        )
+
+        # --------------------------------------------------
+        # Overwrite CAP and province only if lookup exists
+        # --------------------------------------------------
+        #df = lookup
+        
+        df = (
+            lookup
+            .with_column(
+                "city",
+                #coalesce(
+                #    col("city_lookup"),
+                    col("city")
+                #)
+            )
+            .with_column(
+                "province",
+                coalesce(
+                    col("province_lookup"),
+                    col("province")
+                )
+            )
+            .with_column(
+                "province_ext",
+                col("province_ext_lookup")
+            )
+            .with_column(
+                "region",
+                col("region_lookup")
+            )
+            .with_column(
+                "lat",
+                col("lat_lookup")
+            )
+            .with_column(
+                "lng",
+                col("lng_lookup")
+            )
+            .with_column(
+                "is_geo_replaced",
+                col("city_lookup").is_not_null()
+                )
+            .drop(
+                "city_lookup",
+                "province_lookup",
+                "province_ext_lookup",
+                "region_lookup",
+                "lat_lookup",
+                "lng_lookup"
+            )
+        )
+        
+
+        return df
+
+    def enrich_geo_info_from_city_joborder(self, session):
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        candidate_table = config.joborder.output_cleaned_table
+        italian_cities_table = config.italian_cities.output_table
+
+        df_joborder = session.table(
+            f"{database}.{schema}.{candidate_table}"
+        )
+
+        df_cities = (
+            session.table(
+                f"{database}.{schema}.{italian_cities_table}"
+            )
+            .select(
+                col("city_normalized").alias("city_lookup"),
+                #col("cap").alias("cap_lookup"),
+                col("province").alias("province_lookup"),
+                col("province_ext").alias("province_ext_lookup"),
+                col("region").alias("region_lookup"),
+                col("lat").alias("lat_lookup"),
+                col("lng").alias("lng_lookup")
+            )
+        )
+
+        # --------------------------------------------------
+        # Exact lookup on normalized city
+        # --------------------------------------------------
+
+        lookup = (
+            df_joborder
+            .join(
+                df_cities,
+                col("city") == col("city_lookup"),
+                "left"
+            )
+        )
+
+        # --------------------------------------------------
+        # Overwrite CAP and province only if lookup exists
+        # --------------------------------------------------
+        #df = lookup
+        df = (
+            lookup
+            .with_column(
+                "city",
+                #coalesce(
+                #    col("city_lookup"),
+                    col("city")
+                #)
+            )
+            .with_column(
+                "province",
+                col("province_lookup"),
+            )
+            .with_column(
+                "province_ext",
+                col("province_ext_lookup")
+            )
+            .with_column(
+                "region",
+                coalesce(
+                    col("region_lookup"),
+                    col("region")
+                )
+            )
+            .with_column(
+                "lat",
+                col("lat_lookup")
+            )
+            .with_column(
+                "lng",
+                col("lng_lookup")
+            )
+            .with_column(
+                "is_geo_replaced",
+                col("city_lookup").is_not_null()
+                )
+            .drop(
+                "city_lookup",
+                "province_lookup",
+                "province_ext_lookup",
+                "region_lookup",
+                "lat_lookup",
+                "lng_lookup"
+            )
+        )
+
+        return df
+
+
+    def extract_geo_info_job_site(self, session):
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        candidate_table = config.candidate.output_cleaned_table
+        italian_cities_table = config.italian_cities.output_table
+
+        df_candidate = session.table(
+            f"{database}.{schema}.{candidate_table}"
+        )
+
+        df_candidate = (
+            df_candidate
+            .drop("job_site_province_extracted")
+            .drop("job_site_city")
+            .drop("job_site_cap")
+            .drop("job_site_province")
+            .drop("job_site_province_ext")
+            .drop("job_site_province_region")
+        )
+
+        df_cities = (
+            session.table(
+                f"{database}.{schema}.{italian_cities_table}"
+            )
+            .select(
+                col("city").alias("city_lookup"),
+                col("city_normalized"),
+                #col("cap").alias("cap_lookup"),
+                col("province").alias("province_lookup"),
+                col("province_ext").alias("province_ext_lookup"),
+                col("region").alias("region_lookup"),
+                col("lat").alias("lat_lookup"),
+                col("lng").alias("lng_lookup")
+            )
+        )
+
+        """ --------------------------------------------------
+         Extracts province from job_site: matches parenthesis with two characters, i.e (MI)
+         "Via Roma 10 Milano (MI)" -> mi
+        it tries to match these cases:
+        Milano (MI)        -> MI
+        Milano (MI )       -> MI
+        Milano ( MI)       -> MI
+        Milano ( MI )      -> MI
+        if there is no match, it losens up and looks for these matches too:
+        Milano (  MI       -> MI
+        Milano    MI )     -> MI
+        Milano (MI         -> MI
+        Milano MI)         -> MI
+        Milano    MI       -> MI
+        Milano             -> NUll
+         -------------------------------------------------- """
+        df_candidate = (
+            df_candidate
+            .with_column(
+                "job_site_province_extracted",
+                lower(
+                    coalesce(
+                        call_function(
+                            "REGEXP_SUBSTR",
+                            col("job_site"),
+                            lit(r"\(\s*([a-zA-Z]{2})\s*\)\s*$"),
+                            lit(1),
+                            lit(1),
+                            lit("e"),
+                            lit(1)
+                        ),
+                        call_function(
+                            "REGEXP_SUBSTR",
+                            col("job_site"),
+                            lit(r"(\(\s*|\s+)([a-zA-Z]{2})(\s*\)|\s*)$"),
+                            lit(1),
+                            lit(1),
+                            lit("e"),
+                            lit(2)
+                        )
+                    )
+                )
+            )
+        )
+
+        # --------------------------------------------------
+        # Matches candidates with cities sharing the same province.
+        # 1. Joins df_candidate and df_cities based on province (extracted from job_site string). this limits the city search on the province only
+        # if there is no province match,
+        # 2. Keeps only the rows where there is a match between a city in the job_site string and a city in df_cities
+        # 3. Computes match_end_position as the position the last charater of the city in the job_site string 
+        # --------------------------------------------------
+        matches = (
+            df_candidate
+            .join(
+                df_cities,
+                (col("job_site_province_extracted") == col("province_lookup"))
+                | (col("job_site_province_extracted").is_null()), # if unable to extract the province, then don't use it to filter
+                "inner"
+            )
+            .filter(
+                expr(
+                    "POSITION(city_normalized, job_site_norm) > 0"
+                )
+            )
+            .with_column(
+                "city_len",
+                length(col("city_normalized"))
+            )
+            .with_column(
+                "last_position",
+                expr("""
+                    LENGTH(job_site_norm)
+                    - POSITION(
+                        REVERSE(city_normalized),
+                        REVERSE(job_site_norm)
+                    )
+                    - LENGTH(city_normalized)
+                    + 2
+                """)
+            )
+            .with_column(
+                "match_end_position",
+                col("last_position") + col("city_len")
+            )
+        )
+
+        # --------------------------------------------------
+        # Ranks the matches and takes the first one: extracts the city that ends at the rightest position in the job_site_string. if there is a tie, the longest city my be taken.
+        # "Via Roma 10 Milano (MI)" -> "Milano"
+        # "Via Milano 10, Roma (RM)" -> "Roma"
+        # "Via Roma 10, Villanova di Camposampiero (PD)" -> "Villanova di Camposampiero"
+        # "Via  Villanova di Camposampiero 10 Camposampiero (PD)" -> "Camposampiero"
+        # "Via Roma 10, Bolzano Vicentino (VI)" -> "Bolzano Vicentino"
+        # --------------------------------------------------
+        ranking_window = (
+            Window
+            .partition_by(col("candidate_id_bh"))
+            .order_by(
+                col("match_end_position").desc(),
+                col("city_len").desc(),
+                col("city_normalized").asc()
+            )
+        )
+        best_match = (
+            matches
+            .with_column(
+                "rn",
+                row_number().over(ranking_window)
+            )
+            .filter(col("rn") == 1)
+        )
+
+        # --------------------------------------------------
+        # Selects fields
+        # Starting from the city, we can't fetch the cap
+        # --------------------------------------------------
+
+        extracted = (
+            best_match
+            .select(
+                col("candidate_id_bh"),
+                col("city_normalized")
+                    .alias("job_site_city"),
+                col("province_lookup")
+                    .alias("job_site_province"),
+                col("province_ext_lookup")
+                    .alias("job_site_province_ext"),
+                col("region_lookup")
+                    .alias("job_site_region"),
+                col("lat_lookup")
+                    .alias("job_site_lat"),
+                col("lng_lookup")
+                    .alias("job_site_lng"),
+            )
+        )
+
+        # --------------------------------------------------
+        # Merge finale
+        # --------------------------------------------------
+
+        df = (
+            df_candidate
+            .drop("job_site_province_extracted")
+            .join(
+                extracted,
+                "candidate_id_bh",
+                "left"
+            )
+        )
 
         return df
 
@@ -1041,7 +1423,12 @@ class DataIngestion:
         )
 
         df = df.with_column(
-            "PROVINCE_EXTS",
+            "PROVINCE",
+            lower(col("PROVINCE"))
+        )
+
+        df = df.with_column(
+            "PROVINCE_EXT",
             normalize_city_udf(col("PROVINCE_EXT"))
         )
 
@@ -1114,103 +1501,6 @@ class DataIngestion:
         return df
 
 
-    def add_geo_info(self, session):
-        config = self.config
-
-        database = config.database
-        schema = config.output_schema
-        input_table = config.candidate.output_table
-        cities_input_table = config.italian_cities.output_table
-
-        # Snowpark DataFrames
-        df = session.table(f"{database}.{schema}.{input_table}")
-        df_city = session.table(f"{database}.{schema}.{cities_input_table}")
-
-        import ahocorasick
-
-        # Recupera le circa 8.000 città da Snowflake.
-        # Questa è l'unica raccolta di dati sul client.
-        cities = [
-            str(row["CITY"]).strip()
-            for row in (
-                df_city
-                .select("CITY")
-                .where(col("CITY").is_not_null())
-                .distinct()
-                .collect()
-            )
-            if str(row["CITY"]).strip()
-        ]
-
-        # Costruisce l'automa una sola volta per worker UDF.
-        #@lru_cache(maxsize=1)
-        def get_automaton():
-            import ahocorasick
-            automaton = ahocorasick.Automaton()
-
-            for city in cities:
-                automaton.add_word(city.lower(), city)
-
-            automaton.make_automaton()
-            return automaton
-
-        def estrai_city(indirizzo: str) -> str:
-            if indirizzo is None:
-                return None
-
-            indirizzo = str(indirizzo).lower()
-
-            # Rimuove la sigla provinciale finale, ad esempio (mn).
-            indirizzo = re.sub(
-                r"\s*\([a-z]{2}\)\s*$",
-                "",
-                indirizzo
-            )
-
-            automaton = get_automaton()
-            matches = []
-
-            for end_index, city in automaton.iter(indirizzo):
-                # La città memorizzata mantiene le maiuscole originali.
-                city_lower = city.lower()
-                start_index = end_index - len(city_lower) + 1
-
-                before = (
-                    indirizzo[start_index - 1]
-                    if start_index > 0
-                    else " "
-                )
-
-                after_index = end_index + 1
-                after = (
-                    indirizzo[after_index]
-                    if after_index < len(indirizzo)
-                    else " "
-                )
-
-                # Evita corrispondenze dentro altre parole.
-                if not before.isalnum() and not after.isalnum():
-                    matches.append((len(city), city))
-
-            # Preferisce il nome della città più lungo.
-            return max(matches, default=(0, None))[1]
-
-        # Registra la funzione come UDF Snowpark.
-        estrai_city_udf = udf(
-            estrai_city,
-            return_type=StringType(),
-            input_types=[StringType()],
-            packages=["pyahocorasick==2.1.0"]
-        )
-
-        # Crea la nuova colonna senza convertire df in pandas.
-        df = df.with_column(
-            "JOB_SITE_CITY",
-            estrai_city_udf(col("JOB_SITE"))
-        )
-
-        return df
-    
     def write_table(self, df, table_name = 'output_table'):
         """Writes dataframe in Snowflake
 

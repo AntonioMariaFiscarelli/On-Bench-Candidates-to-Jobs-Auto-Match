@@ -29,27 +29,33 @@ class DataIngestionTrainingPipeline:
 
 
 
-
-        """
+        #df = data_ingestion.create_comuni_dataframe(session)
+        #data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
+        
+        
         df = data_ingestion.read_table_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_table)
         df = data_ingestion.clean_table_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
-        """
+        df = data_ingestion.enrich_geo_info_from_city_joborder(session)
+        data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         
-        """
+
         df = data_ingestion.read_table_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
         df = data_ingestion.clean_table_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
-        """
+        df = data_ingestion.enrich_geo_info_from_city_candidate(session)
+        data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
+        df = data_ingestion.extract_geo_info_job_site(session)
+        data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
+        
 
-        #df = data_ingestion.create_comuni_dataframe(session)
-        #data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
 
-        df = data_ingestion.add_geo_info(session)
-        data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
+        
 
+
+        
 
         """
         df = data_ingestion.read_cities_file(session)
