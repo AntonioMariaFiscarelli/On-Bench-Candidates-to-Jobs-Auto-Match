@@ -56,19 +56,16 @@ data_transformation:
   database: IT_DISCOVERY
   schema: ITA_EXP_ONBENCH
   candidate:
-    input_table: MPG_IT_ONBENCH_TEST_CANDIDATE
-    input_cleaned_table: MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED
-    output_cleaned_table: MPG_IT_ONBENCH_TEST_CANDIDATE_FEATURES_CLEANED
+    input_table: MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED
     output_table: MPG_IT_ONBENCH_TEST_CANDIDATE_FEATURES
   joborder:
-    input_table: MPG_IT_ONBENCH_TEST_JOBORDER
-    input_cleaned_table: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
-    output_cleaned_table: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED_FEATURES
+    input_table: MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
     output_table: MPG_IT_ONBENCH_TEST_JOBORDER_FEATURES
   italian_cities:
-    input_table: MPG_IT_ONBENCH_ITALIAN_CITIES_TEST
+    input_table: MPG_IT_ONBENCH_TEST_ITALIAN_CITIES_JSON
   llm:
     model: openai-gpt-5-mini
+    max_tokens: 200000
 
 
 # ============================================================

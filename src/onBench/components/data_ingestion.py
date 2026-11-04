@@ -12,7 +12,6 @@ import re
 
 from src.onBench.utils.common import normalize_cap#, normalize_city
 
-
 from src.onBench.entity.config_entity import DataIngestionConfig, DomainConfig
 
 
@@ -23,7 +22,6 @@ class DataIngestion:
         - reading the input tables
         - filtering the tables in order to select only the candidates/vacancies that have been created/modified recently
         - cleanings candidates' CVs and descriptions
-
     """
 
     def __init__(self, config: DataIngestionConfig, domain_config = DomainConfig):
@@ -144,6 +142,9 @@ class DataIngestion:
             candidate_pb_src AS (
                 SELECT
                     ca.dbcandno AS db_cand_no,
+                    ca.dbcandpcode AS db_cand_pcode,
+                    ca.dbcandsuburb AS db_cand_suburb,
+                    ca.dbcandstate AS db_cand_state,
                     ca.dbAssTINoMission AS db_ass_ti_nomission,
                     ca.dbAssTIDataCessaz AS db_ass_ti_data_cessaz,
                     d.db_sosp_desc_giust,
@@ -182,6 +183,9 @@ class DataIngestion:
                 SELECT DISTINCT
                     c.db_cand_no AS candidate_id_pb,
                     mc.bhid AS candidate_id_bh,
+                    c.db_cand_pcode,
+                    c.db_cand_suburb,
+                    c.db_cand_state,
                     c.db_ass_ti_nomission,
                     CASE
                         WHEN c.db_ass_ti_data_cessaz <= CURRENT_DATE THEN 'Cessato'
@@ -206,9 +210,12 @@ class DataIngestion:
             candidate_pb_daysinfo AS (
                 SELECT 
                     c.candidate_id_pb, 
-                    c.candidate_id_bh, 
+                    c.candidate_id_bh,
+                    c.candidate_status, 
+                    c.db_cand_pcode,
+                    c.db_cand_suburb,
+                    c.db_cand_state,
                     c.db_ass_ti_nomission, 
-                    c.candidate_status,
                     MAX(jo.dbjobdatecommence) AS last_onbench_job_start_date, 
                     MAX(jo.dbjobenddate) AS last_onbench_job_end_date, 
                     CASE
@@ -231,7 +238,7 @@ class DataIngestion:
                     ) jo
                 ON c.candidate_id_pb = jo.dbjobcandno
                 AND c.db_ass_ti_nomission <= jo.dbjobdatecommence and jo.dbjobenddate <= CURRENT_DATE
-                GROUP BY c.candidate_id_pb, c.candidate_id_bh, c.db_ass_ti_nomission, c.candidate_status
+                GROUP BY c.candidate_id_pb, c.candidate_id_bh, c.db_ass_ti_nomission, c.candidate_status, c. db_cand_pcode, db_cand_suburb, db_cand_state
             ),
             
             candidate_pb AS (
@@ -239,6 +246,9 @@ class DataIngestion:
                     candidate_id_pb, 
                     candidate_id_bh, 
                     candidate_status,
+                    db_cand_pcode,
+                    db_cand_suburb,
+                    db_cand_state,
                     db_ass_ti_nomission, 
                     last_onbench_job_start_date, 
                     last_onbench_job_end_date, 
@@ -362,9 +372,12 @@ class DataIngestion:
                 cc.candidate_id_pb,
                 cc.first_name,
                 cc.last_name,
-                cc.cap,
-                cc.city,
-                cc.province,
+                --cc.cap,
+                --cc.city,
+                --cc.province,
+                cob.db_cand_pcode as cap,
+                cob.db_cand_suburb as city,
+                cob.db_cand_state as province,
                 /*
                 cc.skills,
                 cc.education,
@@ -376,6 +389,7 @@ class DataIngestion:
                 cc.parttime_preferenza_perc,
                 cc.turno_preferenza,
                 cc.curriculum,
+                */
                 IFF(
                     COALESCE(
                         NULLIF(TRIM(cc.curriculum), ''),
@@ -391,7 +405,6 @@ class DataIngestion:
                         'Certificazioni: ', COALESCE(cc.certifications, ''), ' | '
                     )
                 ) AS description,
-                */
                 --jri.joborder_id_first,
                 jri.job_site,
                 jri.job_first,
@@ -409,11 +422,11 @@ class DataIngestion:
                 cob.days_onbench_tot,
                 cob.days_onbench_perc
             FROM candidate cc
-            INNER JOIN  candidate_pb cob
+            INNER JOIN candidate_pb cob
                 ON cc.candidate_id_pb = cob.candidate_id_pb
             LEFT JOIN jobs_ranked_agg jri
                 ON cc.candidate_id_pb = jri.db_job_cand_no
-            order by num_jobs_during_onbench desc
+            --order by num_jobs_during_onbench desc
             
         """
         
@@ -617,6 +630,7 @@ class DataIngestion:
                 descrizione_uso_interno,
                 testo_pubblicazione,
                 richieste_aggiuntive,
+                */
                 CASE 
                     WHEN date_last_modified IS NULL AND last_status_change IS NULL THEN NULL
                     ELSE GREATEST(
@@ -645,7 +659,7 @@ class DataIngestion:
                         'REQUISITI: ', COALESCE(requisiti, '')
                     )
                 ) AS description
-                */
+                
             FROM joborder
         """
         df = session.sql(query)
@@ -748,7 +762,8 @@ class DataIngestion:
             )
         )
         """
-        
+
+
         #Partime percentage as of powerbase source. Integer value between 0 and 100
         #If missing, default value is 100
         df = df.with_column(

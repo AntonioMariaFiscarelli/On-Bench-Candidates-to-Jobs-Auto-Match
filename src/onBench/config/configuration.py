@@ -92,14 +92,10 @@ class ConfigurationManager:
             schema=config.schema,
             candidate=CandidateTransformationConfig(
                 input_table=config.candidate.input_table,
-                input_cleaned_table=config.candidate.input_cleaned_table,
-                output_cleaned_table=config.candidate.output_cleaned_table,
                 output_table=config.candidate.output_table,
             ),
             joborder=JoborderTransformationConfig(
                 input_table=config.joborder.input_table,
-                input_cleaned_table=config.joborder.input_cleaned_table,
-                output_cleaned_table=config.joborder.output_cleaned_table,
                 output_table=config.joborder.output_table,
             ),
             italian_cities=ItalianCitiesTransformationConfig(

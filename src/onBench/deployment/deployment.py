@@ -109,7 +109,7 @@ class Deployment:
         """
         config = self.config
         stage = config.stage
-        stored_procedure = config.data_transformation_sp
+        stored_procedure = config.data_transformation.stored_procedure
         runtime_version=config.runtime_version
         imports=config.data_transformation.imports
         packages=config.data_transformation.packages
@@ -145,7 +145,7 @@ class Deployment:
         data_ingestion_task = config.data_ingestion.task
         data_transformation_task = config.data_transformation.task
 
-        tasks = [data_ingestion_task]#[data_ingestion_task, data_transformation_task]
+        tasks = [data_ingestion_task, data_transformation_task] # [data_transformation_task]
         # Suspends existing tasks if they exist already
         for task_name in tasks:
             result = session.sql(f"SHOW TASKS LIKE '{task_name}'").collect()
@@ -163,17 +163,18 @@ class Deployment:
         session.sql(data_ingestion_task_sql).collect()
         logger.info(f"Task {data_ingestion_task} successfully created.")
 
-        '''
+        
         data_transformation_task_sql = f"""
             CREATE OR REPLACE TASK {data_transformation_task}
             WAREHOUSE = '{warehouse}'
             AFTER {data_ingestion_task}
+            --SCHEDULE = 'USING CRON 0/2 9-19 * * 1-5 CET'
             AS
             CALL {database}.{schema}.{data_transformation_sp}();
         """
         session.sql(data_transformation_task_sql).collect()
         logger.info(f"Task {data_transformation_task} successfully created.")
-        '''
+        
 
         # Resume all tasks. It must be done in reverse order of execution
         for task_name in reversed(tasks):
@@ -191,7 +192,7 @@ class Deployment:
         data_ingestion_task = config.data_ingestion.task
         data_transformation_task = config.data_transformation.task
 
-        tasks = [data_ingestion_task]#[data_ingestion_task, data_transformation_task]
+        tasks = [data_ingestion_task, data_transformation_task] #[data_ingestion_task]
 
         # Suspend existing tasks if they exist
         logger.info(f"Deleting tasks...")
@@ -229,7 +230,7 @@ def deploy_pipeline(session):
         deployment.create_stage(session)
         deployment.upload_config_files(session)
         deployment.deploy_data_ingestion_stored_procedure(session)
-        #deployment.deploy_data_transformation_stored_procedure(session)
+        deployment.deploy_data_transformation_stored_procedure(session)
         deployment.reset_pipeline(session)
         deployment.drop_tasks(session)
         deployment.create_tasks(session)

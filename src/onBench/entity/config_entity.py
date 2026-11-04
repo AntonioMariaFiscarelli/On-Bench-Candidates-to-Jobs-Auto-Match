@@ -76,15 +76,11 @@ class DataIngestionConfig:
 @dataclass(frozen=True)
 class CandidateTransformationConfig:
     input_table: str
-    input_cleaned_table: str
-    output_cleaned_table: str
     output_table: str
 
 @dataclass(frozen=True)
 class JoborderTransformationConfig:
     input_table: str
-    input_cleaned_table: str
-    output_cleaned_table: str
     output_table: str
 
 @dataclass(frozen=True)

@@ -32,15 +32,15 @@ class DataIngestionTrainingPipeline:
         #df = data_ingestion.create_comuni_dataframe(session)
         #data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
         
-        
+        """
         df = data_ingestion.read_table_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_table)
         df = data_ingestion.clean_table_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         df = data_ingestion.enrich_geo_info_from_city_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
+        """
         
-
         df = data_ingestion.read_table_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
         df = data_ingestion.clean_table_candidate(session)
@@ -52,25 +52,12 @@ class DataIngestionTrainingPipeline:
         
 
 
-        
-
-
-        
-
-        """
-        df = data_ingestion.read_cities_file(session)
-        data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
-        df = data_ingestion.complete_cities_table(session)
-        data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
-        """
-    
-
 
 def run_data_ingestion_pipeline(session: sp.Session) -> None:
     STAGE_NAME = "Data Ingestion stage"
     try:
         logger.info(f">>>>>> stage {STAGE_NAME} started <<<<<<") 
-        data_ingestion = DataIngestionTrainingPipeline(deployment=False) #Set to True for deployment
+        data_ingestion = DataIngestionTrainingPipeline(deployment=True) #Set to True for deployment
         data_ingestion.main(session)
         logger.info(f">>>>>> stage {STAGE_NAME} completed <<<<<<\n\nx==========x")
     except Exception as e:
