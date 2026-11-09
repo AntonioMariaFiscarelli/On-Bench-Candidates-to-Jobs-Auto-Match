@@ -3,6 +3,7 @@ from src.onBench.utils.common import read_yaml, read_yaml_sp
 from src.onBench.entity.config_entity import (
     GlobalConfig,
     DomainConfig,
+    EmbeddingsConfig,
     LLMConfig,
     CandidateIngestionConfig,
     JoborderIngestionConfig,
@@ -101,8 +102,12 @@ class ConfigurationManager:
             italian_cities=ItalianCitiesTransformationConfig(
                 input_table=config.italian_cities.input_table,
             ),
+            embeddings=EmbeddingsConfig(
+                model=config.embeddings.model,
+            ),
             llm=LLMConfig(
                 model=config.llm.model,
+                max_tokens=config.llm.max_tokens,
             ),
         )
 

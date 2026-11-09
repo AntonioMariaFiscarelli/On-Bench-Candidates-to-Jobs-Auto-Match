@@ -32,6 +32,21 @@ class LLMConfig:
     model: str
     max_tokens: int | None = None
 
+# ============================================================
+# EMBEDDINGS CONFIGURATION
+# ============================================================
+@dataclass(frozen=True)
+class EmbeddingsConfig:
+    model: str
+
+# ============================================================
+# LLM CONFIGURATION
+# ============================================================
+@dataclass(frozen=True)
+class LLMConfig:
+    model: str
+    max_tokens: int | None = None
+
 
 # ============================================================
 # DATA INGESTION
@@ -95,6 +110,7 @@ class DataTransformationConfig:
     candidate: CandidateTransformationConfig
     joborder: JoborderTransformationConfig
     italian_cities: ItalianCitiesTransformationConfig
+    embeddings: EmbeddingsConfig
     llm: LLMConfig
 
 

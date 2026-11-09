@@ -27,12 +27,12 @@ class DataTransformationTrainingPipeline:
             global_config=global_config
             )
 
-        df = data_transformation.compute_embeddings_candidate(session)
+        df = data_transformation.compute_features_candidate(session)
         data_transformation.write_table(df, data_transformation.config.candidate.output_table)
-
-        #df = data_transformation.compute_embeddings_joborder(session)
-        #data_transformation.write_table(df, data_transformation.config.joborder.output_table)
-
+        
+        df = data_transformation.compute_features_joborder(session)
+        data_transformation.write_table(df, data_transformation.config.joborder.output_table)
+        
 
 
 def run_data_transformation_pipeline(session: sp.Session) -> None:

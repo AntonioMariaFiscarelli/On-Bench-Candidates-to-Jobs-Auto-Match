@@ -28,7 +28,11 @@ class DataIngestion:
         self.config = config
         self.domain_config = domain_config
 
-    def clean_description(self, df, column = "description_cleaned"):
+    def clean_description(
+            self, 
+            df, 
+            column = "description_cleaned"
+            ):
         """Cleans string columns such as parsed CVs and job descriptions:
             - replaces multiple consecutive whitespaces with a single whitespace (preserves newlines)
             - removes all html tags
@@ -94,6 +98,7 @@ class DataIngestion:
         logger.info(f"Column {column} successfully cleaned")
 
         return df
+
 
     def read_table_candidate(self, session):
         """Creates candidate table with all the columns needed
@@ -438,6 +443,7 @@ class DataIngestion:
         
         return df
 
+
     def read_table_joborder(self, session):
         """Creates joborder table with all the columns needed
 
@@ -680,6 +686,7 @@ class DataIngestion:
                 - removes all html tags
                 - lowercases all text
             - Removes descriptions that are longer than max_tokens characters
+            - Normalizes city, province and job site (removes accents, apostrophes)
 
         Args:
             session (Session): Snowflake session
@@ -743,6 +750,7 @@ class DataIngestion:
             split(col("turno_preferenza"), lit(","))
         )
 
+        """
 
         #Removes very long meaningless sequences of characters, including character codes for attachments (pdf, jpg etc)
         noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
@@ -761,7 +769,7 @@ class DataIngestion:
                 ).otherwise(col("description"))
             )
         )
-        """
+        
 
 
         #Partime percentage as of powerbase source. Integer value between 0 and 100
@@ -848,6 +856,8 @@ class DataIngestion:
                 - removes all html tags
                 - lowercases all text
             - Removes descriptions that are longer than max_tokens characters
+            - Normalizes city and region (removes accents, apostrophes)
+
 
         Args:
             session (Session): Snowflake session
@@ -913,14 +923,15 @@ class DataIngestion:
 
         """
         df = df.with_column("description_raw", col("description"))
+        """
 
         #Removes very long meaningless sequences of characters
         noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
         df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
 
         df = self.clean_description(df, "description")
-        df = self.clean_description(df, "descrizione_uso_interno")
-        df = self.clean_description(df, "testo_pubblicazione")
+        #df = self.clean_description(df, "descrizione_uso_interno")
+        #df = self.clean_description(df, "testo_pubblicazione")
 
         df = (
             df
@@ -932,7 +943,7 @@ class DataIngestion:
                 ).otherwise(col("description"))   # keep original
             )
         )
-        """
+        
         logger.info(f"Table {input_table} successfully cleaned")
 
         return df

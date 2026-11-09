@@ -145,7 +145,7 @@ class Deployment:
         data_ingestion_task = config.data_ingestion.task
         data_transformation_task = config.data_transformation.task
 
-        tasks = [data_ingestion_task, data_transformation_task] # [data_transformation_task]
+        tasks = [data_ingestion_task, data_transformation_task] # [data_ingestion_task]
         # Suspends existing tasks if they exist already
         for task_name in tasks:
             result = session.sql(f"SHOW TASKS LIKE '{task_name}'").collect()

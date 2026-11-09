@@ -16,7 +16,6 @@ logging.getLogger("snowflake.snowpark").setLevel(logging.WARNING)
 session = get_snowpark_session()
 
 '''
-
 try:
    deploy_pipeline(session)
 except Exception as e:
@@ -24,7 +23,7 @@ except Exception as e:
    raise e
 
 
-'''
+
 
 
 STAGE_NAME = "Data Ingestion stage"
@@ -36,9 +35,9 @@ try:
 except Exception as e:
     logger.exception(e)
     raise e
-
-
 '''
+
+
 STAGE_NAME = "Data Transformation stage"
 try:
    logger.info(f">>>>>> stage {STAGE_NAME} started <<<<<<")
@@ -48,5 +47,3 @@ try:
 except Exception as e:
    logger.exception(e)
    raise e
-
-'''
