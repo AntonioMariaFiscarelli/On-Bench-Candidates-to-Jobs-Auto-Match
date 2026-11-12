@@ -115,6 +115,31 @@ class DataTransformationConfig:
 
 
 # ============================================================
+# RERANKER
+# ============================================================
+@dataclass(frozen=True)
+class CandidateRerankerConfig:
+    input_table: str
+    output_table: str
+
+@dataclass(frozen=True)
+class JoborderRerankerConfig:
+    input_table: str
+    output_table: str
+
+@dataclass(frozen=True)
+class RerankerConfig:
+    root_dir: str
+    database: str
+    schema: str
+    candidate: CandidateRerankerConfig
+    joborder: JoborderRerankerConfig
+    embeddings: EmbeddingsConfig
+    llm: LLMConfig
+
+
+
+# ============================================================
 # DEPLOYMENT
 # ============================================================
 @dataclass(frozen=True)

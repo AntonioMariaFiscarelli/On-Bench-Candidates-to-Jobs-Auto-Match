@@ -12,6 +12,9 @@ from src.onBench.entity.config_entity import (
     CandidateTransformationConfig,
     JoborderTransformationConfig,
     ItalianCitiesTransformationConfig,
+    RerankerConfig,
+    CandidateRerankerConfig,
+    JoborderRerankerConfig,
     DataTransformationConfig,
     PipelineDeploymentConfig,
     DeploymentConfig,
@@ -101,6 +104,30 @@ class ConfigurationManager:
             ),
             italian_cities=ItalianCitiesTransformationConfig(
                 input_table=config.italian_cities.input_table,
+            ),
+            embeddings=EmbeddingsConfig(
+                model=config.embeddings.model,
+            ),
+            llm=LLMConfig(
+                model=config.llm.model,
+                max_tokens=config.llm.max_tokens,
+            ),
+        )
+
+    def get_reranker_config(self) -> RerankerConfig:
+        config = self.config.reranker
+
+        return RerankerConfig(
+            root_dir=config.root_dir,
+            database=config.database,
+            schema=config.schema,
+            candidate=CandidateRerankerConfig(
+                input_table=config.candidate.input_table,
+                output_table=config.candidate.output_table,
+            ),
+            joborder=JoborderRerankerConfig(
+                input_table=config.joborder.input_table,
+                output_table=config.joborder.output_table,
             ),
             embeddings=EmbeddingsConfig(
                 model=config.embeddings.model,

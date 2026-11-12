@@ -127,6 +127,8 @@ class DataIngestion:
             """
 
         query = f""" 
+
+
             WITH dati_sospensione AS (
                 SELECT 
                     dbSospCandNo AS db_sosp_cand_no,
@@ -142,6 +144,16 @@ class DataIngestion:
                     FROM IT_DISCOVERY.CONSUMER_INT_MODEL.PB_FTCANDTISOSPENSIONEDISP_CLEANED -- PARAMETRISE
                 )
                 WHERE rn2 = 1
+            ),
+
+            absenteeism_candidate AS (
+                SELECT candidato_pb as candidate_id_pb, SUM(ore_malattie_correnti) AS hours_leave, sum(ore_lavorabili) AS hours_worked,
+                CASE 
+                    WHEN hours_worked > 0 THEN ROUND(hours_leave/hours_worked, 4)
+                    ELSE null 
+                END AS absenteeism_rate
+                FROM aas_it_hist_prod.finance.dati_ore_costi
+                GROUP BY candidate_id_pb
             ),
 
             candidate_pb_src AS (
@@ -212,6 +224,7 @@ class DataIngestion:
                     ON c.db_cand_no = mc.MOID
                 WHERE candidate_status = 'No mission' OR candidate_status = 'Futuro no mission'
             ),
+            
             candidate_pb_daysinfo AS (
                 SELECT 
                     c.candidate_id_pb, 
@@ -248,7 +261,7 @@ class DataIngestion:
             
             candidate_pb AS (
                 SELECT 
-                    candidate_id_pb, 
+                    c.candidate_id_pb, 
                     candidate_id_bh, 
                     candidate_status,
                     db_cand_pcode,
@@ -271,9 +284,12 @@ class DataIngestion:
                     CASE
                         WHEN candidate_status = 'No mission' THEN COALESCE(CAST(100*(days_since_onbench-tot_days_job)/(days_since_onbench) AS INTEGER), NULL) 
                         ELSE 0
-                    END AS days_onbench_perc,            
-                FROM candidate_pb_daysinfo
+                    END AS days_onbench_perc,      
+                ca.absenteeism_rate
+                FROM candidate_pb_daysinfo c
                 --WHERE candidate_status = 'No mission'
+                LEFT JOIN absenteeism_candidate ca
+                ON c.candidate_id_pb = ca.candidate_id_pb
             ),
 
             candidate AS (
@@ -425,7 +441,8 @@ class DataIngestion:
                 cob.candidate_status,
                 cob.days_onbench_last,
                 cob.days_onbench_tot,
-                cob.days_onbench_perc
+                cob.days_onbench_perc,
+                cob.absenteeism_rate,
             FROM candidate cc
             INNER JOIN candidate_pb cob
                 ON cc.candidate_id_pb = cob.candidate_id_pb
@@ -673,7 +690,6 @@ class DataIngestion:
         logger.info(f"Table {input_table} successfully read")
 
         return df
-
 
     
     def clean_table_candidate(self, session):
@@ -1039,7 +1055,6 @@ class DataIngestion:
                 "lng_lookup"
             )
         )
-        
 
         return df
 
