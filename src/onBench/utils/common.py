@@ -262,7 +262,6 @@ def haversine(lat_ref, lon_ref):
     return distance_km
 
 
-
 def normalize_cap(cap):
 
     if cap is None:
@@ -279,27 +278,3 @@ def normalize_cap(cap):
     return cap.zfill(5)
 
 
-def normalize_city(city: str) -> str:
-
-    import unicodedata
-
-    if city is None:
-        return None
-
-    city = city.strip()
-    if not city:
-        return None
-
-    # Minuscolo e normalizzazione Unicode
-    city = unicodedata.normalize("NFKD", city.casefold())
-    # Rimozione degli accenti
-    city = "".join(
-        char for char in city
-        if not unicodedata.combining(char)
-    )
-    # Punteggiatura e separatori diventano spazi
-    city = re.sub(r"[^a-z0-9]+", " ", city)
-    # Spazi multipli
-    city = re.sub(r"\s+", " ", city).strip()
-
-    return city

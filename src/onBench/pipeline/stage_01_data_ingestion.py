@@ -29,8 +29,9 @@ class DataIngestionTrainingPipeline:
 
 
 
-        #df = data_ingestion.create_comuni_dataframe(session)
+        #df = data_ingestion.create_geo_table(session)
         #data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
+        
         
         
         df = data_ingestion.read_table_joborder(session)
@@ -38,7 +39,7 @@ class DataIngestionTrainingPipeline:
         df = data_ingestion.clean_table_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         df = data_ingestion.enrich_geo_info_from_city_joborder(session)
-        #df = df.limit(100)
+        df = df.limit(100)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         
         

@@ -1,8 +1,8 @@
 from src.onBench import logger
 
-from snowflake.snowpark.functions import col, coalesce, lit, regexp_replace, when, greatest, length, trim, lower, udf, to_varchar
-from snowflake.snowpark.functions import expr, split, iff, concat, call_function, row_number
-from snowflake.snowpark.types import StructType, StructField, StringType, FloatType, DoubleType, BooleanType, ArrayType
+from snowflake.snowpark.functions import col, coalesce, lit, regexp_replace, when, length, trim, lower, udf, to_varchar
+from snowflake.snowpark.functions import expr, iff, call_function, row_number, substring
+from snowflake.snowpark.types import StructType, StructField, StringType, DoubleType, BooleanType
 from snowflake.snowpark.window import Window
 
 
@@ -10,18 +10,18 @@ import pandas as pd
 import json
 import re
 
-from src.onBench.utils.common import normalize_cap#, normalize_city
+from src.onBench.utils.common import normalize_cap
 
 from src.onBench.entity.config_entity import DataIngestionConfig, DomainConfig
 
 
 class DataIngestion:
     """
-    This class is used to create the candidate and vacancie tables.
+    This class is used to create the candidate and joborder tables.
     It provides methods for:
         - reading the input tables
-        - filtering the tables in order to select only the candidates/vacancies that have been created/modified recently
-        - cleanings candidates' CVs and descriptions
+        - cleanings candidates' CVs and joborder descriptions
+        - enriching candidates and joborders with geographical information
     """
 
     def __init__(self, config: DataIngestionConfig, domain_config = DomainConfig):
@@ -31,23 +31,51 @@ class DataIngestion:
     def clean_description(
             self, 
             df, 
-            column = "description_cleaned"
+            column = "description_cleaned",
+            max_tokens = 20000
             ):
-        """Cleans string columns such as parsed CVs and job descriptions:
-            - replaces multiple consecutive whitespaces with a single whitespace (preserves newlines)
-            - removes all html tags
-            - lowercases all text
+        """Clean text fields such as CVs and job descriptions.
+
+        Cleaning steps:
+            - Normalize whitespace.
+            - Remove HTML tags.
+            - Convert text to lowercase.
+            - Convert empty strings to NULL.
 
         Args:
-            df (DataFrame): dataframe
-            column (string): column to clean
+            df (DataFrame): Input dataframe.
+            column (str): Column to clean.
 
         Returns:
-            df (Snowpark Dataframe): dataframe
+            DataFrame: Dataframe with the cleaned column.
         """
 
         #df = df.filter((col(column).is_not_null()) & (trim(col(column)) != ""))
         
+        # ------------------------------------------------------------------
+        # Remove long meaningless sequences from descriptions, such as:
+        # - base64-encoded content
+        # - embedded files or images
+        # - unusually long random strings
+        # ------------------------------------------------------------------
+
+        noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
+        
+        df = df.with_column(
+            column, 
+            regexp_replace(
+                col(column), 
+                noise_pattern, 
+                ""
+                )
+        )
+
+        # ------------------------------------------------------------------
+        # Normalize whitespace:
+        # - replace consecutive spaces and tabs
+        # - trim leading and trailing spaces
+        # ------------------------------------------------------------------
+
         def build_normalize_whitespace_udf():
             def normalize(text: str) -> str:
                 import re
@@ -56,9 +84,18 @@ class DataIngestion:
                 return re.sub(r'[ \t]+', ' ', text).strip()
 
             return udf(normalize, return_type=StringType(), input_types=[StringType()])
-        normalize_udf = build_normalize_whitespace_udf()
-        df = df.with_column(column, normalize_udf(df[column]))
         
+        normalize_udf = build_normalize_whitespace_udf()
+
+        df = df.with_column(
+            column, 
+            normalize_udf(df[column])
+            )
+        
+
+        # ------------------------------------------------------------------
+        # Remove HTML tags while preserving textual content.
+        # ------------------------------------------------------------------
 
         def build_clean_html_udf():
             from bs4 import BeautifulSoup
@@ -75,9 +112,20 @@ class DataIngestion:
             )
 
         clean_html_udf = build_clean_html_udf()
-        df = df.with_column(column, clean_html_udf(df[column]))
 
-        df = df.with_column(column, lower(df[column]))
+        df = df.with_column(
+            column, 
+            clean_html_udf(df[column])
+        )
+
+        # ------------------------------------------------------------------
+        # Standardize text representation.
+        # ------------------------------------------------------------------
+
+        df = df.with_column(
+            column, 
+            lower(df[column])
+        )
 
         """
         df = df.filter((col(column).is_not_null()) & 
@@ -87,28 +135,55 @@ class DataIngestion:
                        (~col(column).like("%null%"))
                        )
         """
-        df = df.with_column(column, col(column).cast("STRING"))
+        df = df.with_column(
+            column, 
+            col(column).cast("STRING")
+            )
+
+
+        # ------------------------------------------------------------------
+        # Convert empty strings to NULL.
+        # ------------------------------------------------------------------
 
         df = df.with_column(
             column,
-            iff(trim(col(column)) == "", None, col(column))
+            iff(
+                trim(col(column)) == "", 
+                None, 
+                col(column)
+                )
         )
 
-        
+        # ------------------------------------------------------------------
+        # Truncate descriptions exceeding the configured size limit
+        # ------------------------------------------------------------------
+
+        df = df.with_column(
+            "description",
+            substring(col("description"), 1, max_tokens)
+        )
+
         logger.info(f"Column {column} successfully cleaned")
 
         return df
 
 
-    def read_table_candidate(self, session):
-        """Creates candidate table with all the columns needed
+    def read_table_candidate(
+            self, 
+            session
+            ):
+        """Read and assemble the candidate dataset.
+
+        The dataset is built by combining Bullhorn and PowerBase sources
+        and selecting the fields required by the recommendation pipeline.
 
         Args:
-            session (Session): Snowflake session
+            session (Session): Snowflake session.
 
         Returns:
-            df (Snowpark Dataframe): dataframe
+            DataFrame: Candidate dataframe.
         """
+        
         config = self.config
         database = config.database
         schema = config.input_schema
@@ -116,18 +191,18 @@ class DataIngestion:
         input_pb_table = config.candidate.input_pb_table
         days_nomission = config.candidate.days_nomission
 
-        # Create a temporary table with only 100 rows from the view 
-        if(False):
-            input_table = f"candidate_materialized_100"
-            """
-            CREATE OR REPLACE TABLE IT_DISCOVERY.CONSUMER_INT_MODEL.candidate_materialized AS 
-            SELECT * FROM IT_DISCOVERY.CONSUMER_INT_MODEL.CANDIDATE_CLEANED -- this is your VIEW 
-            WHERE date_added >= DATEADD(day, -60, CURRENT_TIMESTAMP())
-            LIMIT 1000
-            """
+
+        # ------------------------------------------------------------------
+        # Build the consolidated candidate dataset:
+        # - retrieve candidate status from PowerBase
+        # - compute on-bench metrics
+        # - compute absenteeism indicators
+        # - retrieve candidate profile information
+        # - reconstruct job history
+        # - merge all sources into a single dataset
+        # ------------------------------------------------------------------
 
         query = f""" 
-
 
             WITH dati_sospensione AS (
                 SELECT 
@@ -454,38 +529,42 @@ class DataIngestion:
         
         df = session.sql(query)
 
-        #candidate_df = candidate_df.with_column("candidateid", col("candidateid").cast("string"))
-
         logger.info(f"Table {input_table} successfully read")
         
         return df
 
 
-    def read_table_joborder(self, session):
-        """Creates joborder table with all the columns needed
+    def read_table_joborder(
+            self, 
+            session
+            ):
+        """Read and assemble the joborder dataset.
+
+        The dataset is built by combining Bullhorn and PowerBase sources
+        and selecting the fields required by the recommendation pipeline.
 
         Args:
-            session (Session): Snowflake session
+            session (Session): Snowflake session.
 
         Returns:
-            df (Snowpark Dataframe): dataframe
+            DataFrame: Joborder dataframe.
         """
+    
         config = self.config
         database = config.database
         schema = config.input_schema
         input_table = config.joborder.input_table
 
-        # Create a temporary table with only 100 rows from the view 
-        if(False):
-            input_table_joborder = f"joborder_materialized_100"
-            """
-            CREATE OR REPLACE TABLE IT_DISCOVERY.CONSUMER_INT_MODEL.joborder_materialized AS 
-            SELECT * FROM IT_DISCOVERY.CONSUMER_INT_MODEL.JOBORDER_CLEANED -- this is your VIEW 
-            WHERE isopen = 1 AND status = 'Accepting Candidates' 
-            AND datelastmodified >= DATEADD(day, -60, CURRENT_TIMESTAMP())
-            LIMIT 1000
 
-            """
+        # ------------------------------------------------------------------
+        # Build the consolidated joborder dataset:
+        # - aggregate CCNL information
+        # - retrieve joborder data from PowerBase
+        # - retrieve joborder data from Bullhorn
+        # - retrieve latest submission activity
+        # - retrieve custom joborder attributes
+        # - merge all sources into a single dataset
+        # ------------------------------------------------------------------
 
         query = f"""
         WITH 
@@ -685,6 +764,7 @@ class DataIngestion:
                 
             FROM joborder
         """
+        
         df = session.sql(query)
 
         logger.info(f"Table {input_table} successfully read")
@@ -692,169 +772,115 @@ class DataIngestion:
         return df
 
     
-    def clean_table_candidate(self, session):
-        """Feature engineering and cleaning of the candidate table:
-            - PARTTIME_PERC: if missing, default value is 100; if it's 0, it's set to None
-            - Removes leading and trailing whitespaces from all string columns
-            - Removes very long meaningless sequences of characters
-            - General cleaning of the description column:
-                - replaces multiple consecutive whitespaces with a single whitespace (preserves newlines)
-                - removes all html tags
-                - lowercases all text
-            - Removes descriptions that are longer than max_tokens characters
-            - Normalizes city, province and job site (removes accents, apostrophes)
+    def clean_table_candidate(
+            self, 
+            session
+            ):
+        """Clean and standardize the candidate table.
+
+        Cleaning steps:
+            - Clean and normalize description text.
+            - Remove descriptions exceeding the configured length limit.
+            - Standardize part-time percentage values.
+            - Trim and lowercase all string columns.
+            - Normalize geographic fields used for matching.
 
         Args:
-            session (Session): Snowflake session
+            session (Session): Snowflake session.
 
         Returns:
-            df (Snowpark Dataframe): dataframe
+            DataFrame: Cleaned candidate dataframe.
         """
+
         config = self.config
         domain_config = self.domain_config
         database = config.database
         schema = config.output_schema
         input_table = config.candidate.output_table
         max_tokens = config.llm.max_tokens
-        desired_locations = domain_config.desired_locations
-        parttime_preferenza_perc = domain_config.parttime_preferenza_perc
 
         df = session.table(f"{database}.{schema}.{input_table}")  
 
-        """
-        #df = df.with_column("description_raw", col("description"))
 
-        #Partime percentage as of bullhorn source. Recruiter is supposed to insert the value with a drow down menu with set values.
-        #In reality it's more similar to a free text input where you'll find values such ash "50", "50%", "50, 60" etc
-        #Parttime preferenza perc is set to its default values representing percentages: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]. If missing, default value is 100
-        df = df.with_column(
-            "PARTTIME_PREFERENZA_PERC",
-            coalesce(col("PARTTIME_PREFERENZA_PERC"), lit("100%"))
-        )
+        # ------------------------------------------------------------------
+        # Apply description cleaning and normalization.
+        # ------------------------------------------------------------------
 
-        #it can contain multiple values such as "80, 100". If so, it will take the maximum value.
-        exprs = [
-            when(col("PARTTIME_PREFERENZA_PERC").contains(lit(v)), lit(int(v))).otherwise(lit(0))
-            for v in parttime_preferenza_perc
-        ]
-        # Take the maximum across all expressions
-        df = df.with_column(
-            "PARTTIME_PREFERENZA_PERC",
-            greatest(*exprs)
-        )
-        #If it contained none of the default values, it's set to None
-        df = df.with_column(
-            "PARTTIME_PREFERENZA_PERC",
-            when(col("PARTTIME_PREFERENZA_PERC") == 0, None).otherwise(col("PARTTIME_PREFERENZA_PERC"))
-        )
-
+        df = self.clean_description(df, "description", max_tokens)
         
-        #Desired location is set to its default values: "Locale", "Regionale", "Nazionale", "Internazionale". Only one value allowed
-        case_parts = []
-        for level in reversed(desired_locations):   # highest first
-            case_parts.append(f"WHEN DESIRED_LOCATION ILIKE '%{level}%' THEN '{level}'")
 
-        case_expr = "CASE " + " ".join(case_parts) + " ELSE NULL END"
+        # ------------------------------------------------------------------
+        # Standardize part-time percentage:
+        # - missing values default to 100
+        # - 0 is treated as unknown
+        # ------------------------------------------------------------------
 
-        df = df.with_column(
-            "DESIRED_LOCATION",
-            expr(case_expr)
-        )
-        #Turno preferenza is set to its default values: ["Mattina", "Pomeriggio", "Notte", "Fine Settimana"] Multiple values are allowed as a string of comma separated values such as "Mattina, Pomeriggio"
-        df = df.with_column(
-            "turno_preferenza",
-            split(col("turno_preferenza"), lit(","))
-        )
-
-        """
-
-        #Removes very long meaningless sequences of characters, including character codes for attachments (pdf, jpg etc)
-        noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
-        df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
-
-        df = self.clean_description(df, "description")
-
-        #If description is longer than max_tokens, replace it with an empty string
         df = (
             df
             .with_column(
-                "description",
-                when(
-                    length(col("description")) > max_tokens,
-                    lit("")                     
-                ).otherwise(col("description"))
+                "PARTTIME_PERC",
+                coalesce(col("PARTTIME_PERC"), lit(100))
+            )
+            .with_column(
+                "PARTTIME_PERC",
+                when(col("PARTTIME_PERC") == 0, None)
+                .otherwise(col("PARTTIME_PERC"))
             )
         )
-        
 
+        # ------------------------------------------------------------------
+        # Convert CCNL code to string.
+        # ------------------------------------------------------------------
 
-        #Partime percentage as of powerbase source. Integer value between 0 and 100
-        #If missing, default value is 100
         df = df.with_column(
-            "PARTTIME_PERC",
-            coalesce(col("PARTTIME_PERC"), lit(100))
-        )
-        #If it's 0, it's set to None
-        df = df.with_column(
-            "PARTTIME_PERC",
-            when(col("PARTTIME_PERC") == 0, None).otherwise(col("PARTTIME_PERC"))
+            "CCNL_CODE", 
+            to_varchar(
+                col("CCNL_CODE").cast("int")
+                )
         )
 
-        df = df.with_column("CCNL_CODE", to_varchar(col("CCNL_CODE").cast("int")))
 
-        # Trim all leading and trailing whitespaces from all string columns
+        # ------------------------------------------------------------------
+        # Standardize all string columns:
+        # - trim leading and trailing spaces
+        # - convert values to lowercase
+        # ------------------------------------------------------------------
+
         string_cols = [
             f.name
             for f in df.schema.fields
             if f.datatype.__class__.__name__ == "StringType"
         ]
         for c in string_cols:
-            df = df.with_column(c, lower(trim(col(c))))
-
-
-        def build_normalize_city_udf():
-            def normalize_city(city: str) -> str:
-
-                import unicodedata
-
-                if city is None:
-                    return None
-
-                city = city.strip()
-                if not city:
-                    return None
-
-                # Minuscolo e normalizzazione Unicode
-                city = unicodedata.normalize("NFKD", city.casefold())
-                # Rimozione degli accenti
-                city = "".join(
-                    char for char in city
-                    if not unicodedata.combining(char)
+            df = df.with_column(
+                c, 
+                lower(
+                    trim(
+                        col(c)
+                    )
                 )
-                # Punteggiatura e separatori diventano spazi
-                city = re.sub(r"[^a-z0-9]+", " ", city)
-                # Spazi multipli
-                city = re.sub(r"\s+", " ", city).strip()
+            )
 
-                return city
-            return udf(normalize_city, return_type=StringType(), input_types=[StringType()])
-        
-        normalize_city_udf = build_normalize_city_udf()
+        # ------------------------------------------------------------------
+        # Normalize geographic fields used for matching.
+        # ------------------------------------------------------------------
 
-        df = df.with_column(
-            "CITY",
-            normalize_city_udf(col("CITY"))
-        ) 
-        df = df.with_column(
-            "PROVINCE",
-            normalize_city_udf(col("PROVINCE"))
-        )
+        normalize_city_udf = self.build_normalize_city_udf()
 
-        #df = df.with_column("JOB_SITE", lit("Via Roma 10, Almenno San Bartolomeo (BG)"))   
-
-        df = df.with_column(
-            "JOB_SITE_NORM",
-            normalize_city_udf(col("JOB_SITE"))
+        df = (
+            df 
+            .with_column(
+                "CITY",
+                normalize_city_udf(col("CITY"))
+            ) 
+            .with_column(
+                "PROVINCE",
+                normalize_city_udf(col("PROVINCE"))
+            )
+            .with_column(
+                "JOB_SITE_NORM",
+                normalize_city_udf(col("JOB_SITE"))
+            )
         )
 
         logger.info(f"Table {input_table} successfully cleaned")
@@ -862,34 +888,40 @@ class DataIngestion:
         return df
 
 
-    
-    def clean_table_joborder(self, session):
-        """Feature engineering and cleaning of the joborder table:
-            - Removes leading and trailing whitespaces from all string columns
-            - Removes very long meaningless sequences of characters
-            - General cleaning of the description column:
-                - replaces multiple consecutive whitespaces with a single whitespace (preserves newlines)
-                - removes all html tags
-                - lowercases all text
-            - Removes descriptions that are longer than max_tokens characters
-            - Normalizes city and region (removes accents, apostrophes)
+    def clean_table_joborder(
+            self, 
+            session
+            ):
+        """Clean and standardize the joborder table.
 
+        Cleaning steps:
+            - Trim and lowercase all string columns.
+            - Normalize city and region values.
+            - Remove long meaningless character sequences.
+            - Clean description text.
+            - Remove descriptions exceeding the configured length limit.
 
         Args:
-            session (Session): Snowflake session
+            session (Session): Snowflake session.
 
         Returns:
-            df (Snowpark Dataframe): dataframe
+            DataFrame: Cleaned joborder dataframe.
         """
+
         config = self.config
         database = config.database
         schema = config.output_schema
         input_table = config.joborder.output_table
         max_tokens = config.llm.max_tokens
 
-
         df = session.table(f"{database}.{schema}.{input_table}")
 
+        # ------------------------------------------------------------------
+        # Standardize all string columns:
+        # - trim leading and trailing spaces
+        # - convert values to lowercase
+        # ------------------------------------------------------------------
+        
         string_cols = [
             f.name
             for f in df.schema.fields
@@ -898,74 +930,71 @@ class DataIngestion:
         for c in string_cols:
             df = df.with_column(c, lower(trim(col(c))))
 
-        def build_normalize_city_udf():
-            def normalize_city(city: str) -> str:
-
-                import unicodedata
-
-                if city is None:
-                    return None
-
-                city = city.strip()
-                if not city:
-                    return None
-
-                # Minuscolo e normalizzazione Unicode
-                city = unicodedata.normalize("NFKD", city.casefold())
-                # Rimozione degli accenti
-                city = "".join(
-                    char for char in city
-                    if not unicodedata.combining(char)
-                )
-                # Punteggiatura e separatori diventano spazi
-                city = re.sub(r"[^a-z0-9]+", " ", city)
-                # Spazi multipli
-                city = re.sub(r"\s+", " ", city).strip()
-
-                return city
-            return udf(normalize_city, return_type=StringType(), input_types=[StringType()])
+ 
+        # ------------------------------------------------------------------
+        # Normalize geographic fields used for matching.
+        # ------------------------------------------------------------------
         
-        normalize_city_udf = build_normalize_city_udf()
-
-        df = df.with_column(
-            "CITY",
-            normalize_city_udf(col("CITY"))
-        ) 
-        df = df.with_column(
-            "REGION",
-            normalize_city_udf(col("REGION"))
-        ) 
-
-
-        """
-        df = df.with_column("description_raw", col("description"))
-        """
-
-        #Removes very long meaningless sequences of characters
-        noise_pattern = r"(/9j/[A-Za-z0-9+/=]{30,}|iVBORw0KGgo[A-Za-z0-9+/=]{30,}|JVBERi0x[A-Za-z0-9+/=]{30,}|[A-Za-z0-9+/=]{80,}|[^A-Za-z0-9 ]{30,}|([A-Za-z]{3,} ){15,})"
-        df = df.with_column("description", regexp_replace(col("description"), noise_pattern, "") )
-
-        df = self.clean_description(df, "description")
-        #df = self.clean_description(df, "descrizione_uso_interno")
-        #df = self.clean_description(df, "testo_pubblicazione")
+        normalize_city_udf = self.build_normalize_city_udf()
 
         df = (
             df
             .with_column(
-                "description",
-                when(
-                    length(col("description")) > max_tokens,
-                    lit("")                      # replace with empty string
-                ).otherwise(col("description"))   # keep original
+                "CITY",
+                normalize_city_udf(col("CITY"))
+            ) 
+            .with_column(
+                "REGION",
+                normalize_city_udf(col("REGION"))
             )
         )
+
+
+        #df = df.with_column("description_raw", col("description"))
+        
+
+        # ------------------------------------------------------------------
+        # Apply description cleaning:
+        # - remove HTML tags
+        # - normalize whitespace
+        # - perform text standardization
+        # ------------------------------------------------------------------
+        
+        df = self.clean_description(df, "description", max_tokens)
+        #df = self.clean_description(df, "descrizione_uso_interno")
+        #df = self.clean_description(df, "testo_pubblicazione")
+
         
         logger.info(f"Table {input_table} successfully cleaned")
 
         return df
 
 
-    def enrich_geo_info_from_city_candidate(self, session):
+    def enrich_geo_info_from_city_candidate(
+            self, 
+            session
+            ):
+
+        """
+        Enrich candidate geographic information using the Italian cities
+        reference table.
+
+        The enrichment logic is as follows:
+
+        - Validate candidate CAP against the list of known CAPs.
+        - Match candidate city against the normalized city lookup.
+        - If the candidate CAP is invalid and a city match exists,
+        replace the CAP with the lookup CAP.
+        - Populate province, province_ext, region, latitude and longitude
+        from the lookup when a city match exists.
+        - Preserve the original column values when no city match is available.
+
+        Args:
+            session (Session): Snowpark session.
+
+        Returns:
+            DataFrame: Candidate dataframe enriched with geographic information.
+        """
 
         config = self.config
         database = config.database
@@ -977,13 +1006,47 @@ class DataIngestion:
             f"{database}.{schema}.{candidate_table}"
         )
 
+        df_cities_raw = session.table(
+            f"{database}.{schema}.{italian_cities_table}"
+        )
+
+        # ------------------------------------------------------------------
+        # Build the list of valid CAP values.
+        # ------------------------------------------------------------------
+        
+        valid_caps = (
+            df_cities_raw
+            .select(col("cap"))
+            .distinct()
+            .with_column_renamed("cap", "valid_cap")
+        )
+
+
+        # ------------------------------------------------------------------
+        # Build a city lookup table.
+        #
+        # Multiple rows may exist for the same normalized city. Keep a single
+        # physical row so that CAP, province, region and coordinates always
+        # originate from the same source record.
+        # ------------------------------------------------------------------
+
+        city_window = (
+            Window
+            .partition_by("city_normalized")
+            .order_by("cap")
+        )
+
         df_cities = (
-            session.table(
-                f"{database}.{schema}.{italian_cities_table}"
+            df_cities_raw
+            .with_column(
+                "_rn",
+                row_number().over(city_window)
             )
+            .filter(col("_rn") == 1)
+            .drop("_rn")
             .select(
                 col("city_normalized").alias("city_lookup"),
-                #col("cap").alias("cap_lookup"),
+                col("cap").alias("cap_lookup"),
                 col("province").alias("province_lookup"),
                 col("province_ext").alias("province_ext_lookup"),
                 col("region").alias("region_lookup"),
@@ -992,10 +1055,17 @@ class DataIngestion:
             )
         )
 
-        # --------------------------------------------------
-        # Exact lookup on normalized city
-        # --------------------------------------------------
 
+        # ------------------------------------------------------------------
+        # Join candidate records with:
+        # - the city lookup table
+        # - the list of valid CAP values
+        #
+        # This allows us to determine whether:
+        # - the city exists in the reference dataset
+        # - the CAP is valid
+        # ------------------------------------------------------------------
+        
         lookup = (
             df_candidate
             .join(
@@ -1003,21 +1073,40 @@ class DataIngestion:
                 col("city") == col("city_lookup"),
                 "left"
             )
+            .join(
+                valid_caps,
+                col("cap") == col("valid_cap"),
+                "left"
+            )
         )
 
-        # --------------------------------------------------
-        # Overwrite CAP and province only if lookup exists
-        # --------------------------------------------------
-        #df = lookup
-        
+
+        # ------------------------------------------------------------------
+        # Apply geographic enrichment.
+        #
+        # CAP:
+        # - Keep the CAP when it is valid.
+        # - Otherwise use the lookup CAP when available.
+        # - Otherwise preserve the original CAP.
+        #
+        # Geographic attributes:
+        # - Use lookup values when a city match exists.
+        # - Preserve existing values where applicable.
+        # ------------------------------------------------------------------
+
         df = (
             lookup
+            #.with_column("old_cap", col("cap"))
+            #.with_column("was_cap_replaced", col("valid_cap").is_null() & col("cap_lookup").is_not_null())
             .with_column(
-                "city",
-                #coalesce(
-                #    col("city_lookup"),
-                    col("city")
-                #)
+                "cap",
+                when(
+                    col("valid_cap").is_null(),
+                    coalesce(
+                        col("cap_lookup"),
+                        col("cap")
+                    )
+                ).otherwise(col("cap"))
             )
             .with_column(
                 "province",
@@ -1042,12 +1131,11 @@ class DataIngestion:
                 "lng",
                 col("lng_lookup")
             )
-            .with_column(
-                "is_geo_replaced",
-                col("city_lookup").is_not_null()
-                )
+            #.with_column("is_geo_replaced", col("city_lookup").is_not_null())
             .drop(
                 "city_lookup",
+                "cap_lookup",
+                "valid_cap",
                 "province_lookup",
                 "province_ext_lookup",
                 "region_lookup",
@@ -1058,25 +1146,83 @@ class DataIngestion:
 
         return df
 
-    def enrich_geo_info_from_city_joborder(self, session):
+
+    def enrich_geo_info_from_city_joborder(
+            self, 
+            session):
+
+        """
+        Enrich joborder geographic information using the Italian cities
+        reference table.
+
+        The enrichment logic is as follows:
+
+        - Validate joborder CAP against the list of known CAPs.
+        - Match joborder city against the normalized city lookup.
+        - If the joborder CAP is invalid and a city match exists,
+        replace the CAP with the lookup CAP.
+        - Populate province, province_ext, region, latitude and longitude
+        from the lookup when a city match exists.
+        - Preserve the original column values when no city match is available.
+
+        Args:
+            session (Session): Snowpark session.
+
+        Returns:
+            DataFrame: Joborder dataframe enriched with geographic information.
+        """
 
         config = self.config
         database = config.database
         schema = config.output_schema
-        candidate_table = config.joborder.output_cleaned_table
+        joborder_table = config.joborder.output_cleaned_table
         italian_cities_table = config.italian_cities.output_table
 
         df_joborder = session.table(
-            f"{database}.{schema}.{candidate_table}"
+            f"{database}.{schema}.{joborder_table}"
+        )
+
+        df_cities_raw = session.table(
+            f"{database}.{schema}.{italian_cities_table}"
+        )
+
+        # ------------------------------------------------------------------
+        # Build the list of valid CAP values.
+        # ------------------------------------------------------------------
+
+        valid_caps = (
+            df_cities_raw
+            .select(col("cap"))
+            .distinct()
+            .with_column_renamed("cap", "valid_cap")
+        )
+
+
+        # ------------------------------------------------------------------
+        # Build a city lookup table.
+        #
+        # Multiple rows may exist for the same normalized city. Keep a single
+        # physical row so that CAP, province, region and coordinates always
+        # originate from the same source record.
+        # ------------------------------------------------------------------
+
+        city_window = (
+            Window
+            .partition_by("city_normalized")
+            .order_by("cap")
         )
 
         df_cities = (
-            session.table(
-                f"{database}.{schema}.{italian_cities_table}"
+            df_cities_raw
+            .with_column(
+                "_rn",
+                row_number().over(city_window)
             )
+            .filter(col("_rn") == 1)
+            .drop("_rn")
             .select(
                 col("city_normalized").alias("city_lookup"),
-                #col("cap").alias("cap_lookup"),
+                col("cap").alias("cap_lookup"),
                 col("province").alias("province_lookup"),
                 col("province_ext").alias("province_ext_lookup"),
                 col("region").alias("region_lookup"),
@@ -1085,9 +1231,16 @@ class DataIngestion:
             )
         )
 
-        # --------------------------------------------------
-        # Exact lookup on normalized city
-        # --------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # Join candidate records with:
+        # - the city lookup table
+        # - the list of valid CAP values
+        #
+        # This allows us to determine whether:
+        # - the city exists in the reference dataset
+        # - the CAP is valid
+        # ------------------------------------------------------------------
 
         lookup = (
             df_joborder
@@ -1096,24 +1249,44 @@ class DataIngestion:
                 col("city") == col("city_lookup"),
                 "left"
             )
+            .join(
+                valid_caps,
+                col("cap") == col("valid_cap"),
+                "left"
+            )
         )
 
-        # --------------------------------------------------
-        # Overwrite CAP and province only if lookup exists
-        # --------------------------------------------------
-        #df = lookup
+
+        # ------------------------------------------------------------------
+        # Apply geographic enrichment.
+        #
+        # CAP:
+        # - Keep the CAP when it is valid.
+        # - Otherwise use the lookup CAP when available.
+        # - Otherwise preserve the original CAP.
+        #
+        # Geographic attributes:
+        # - Use lookup values when a city match exists.
+        # - Preserve existing values where applicable.
+        # ------------------------------------------------------------------
+
         df = (
             lookup
+            #.with_column("old_cap", col("cap"))
+            #.with_column("was_cap_replaced", col("valid_cap").is_null() & col("cap_lookup").is_not_null())
             .with_column(
-                "city",
-                #coalesce(
-                #    col("city_lookup"),
-                    col("city")
-                #)
+                "cap",
+                when(
+                    col("valid_cap").is_null(),
+                    coalesce(
+                        col("cap_lookup"),
+                        col("cap")
+                    )
+                ).otherwise(col("cap"))
             )
             .with_column(
                 "province",
-                col("province_lookup"),
+                col("province_lookup")
             )
             .with_column(
                 "province_ext",
@@ -1134,12 +1307,11 @@ class DataIngestion:
                 "lng",
                 col("lng_lookup")
             )
-            .with_column(
-                "is_geo_replaced",
-                col("city_lookup").is_not_null()
-                )
+            #.with_column("is_geo_replaced", col("city_lookup").is_not_null())
             .drop(
                 "city_lookup",
+                "cap_lookup",
+                "valid_cap",
                 "province_lookup",
                 "province_ext_lookup",
                 "region_lookup",
@@ -1151,7 +1323,31 @@ class DataIngestion:
         return df
 
 
-    def extract_geo_info_job_site(self, session):
+    def extract_geo_info_job_site(
+            self, 
+            session
+            ):
+        """
+        Extract geographic information from the candidate job_site field.
+
+        The extraction logic is as follows:
+
+        - Extract the province abbreviation from the end of the job_site string
+        when present (e.g. "Milano (MI)").
+        - Match the job_site province against the Italian cities reference table.
+        - Restrict city candidates to the extracted province when available.
+        - Select the most likely city match based on its position within the
+        job_site string.
+        - Enrich the candidate record with city, province, region and
+        coordinates derived from the selected match.
+
+        Args:
+            session (Session): Snowpark session.
+
+        Returns:
+            DataFrame: Candidate dataframe enriched with geographic information
+            extracted from the job_site field.
+        """
 
         config = self.config
         database = config.database
@@ -1163,24 +1359,16 @@ class DataIngestion:
             f"{database}.{schema}.{candidate_table}"
         )
 
-        df_candidate = (
-            df_candidate
-            .drop("job_site_province_extracted")
-            .drop("job_site_city")
-            .drop("job_site_cap")
-            .drop("job_site_province")
-            .drop("job_site_province_ext")
-            .drop("job_site_province_region")
-        )
-
-        df_cities = (
-            session.table(
+        df_cities = session.table(
                 f"{database}.{schema}.{italian_cities_table}"
             )
+
+        df_cities = (
+            df_cities
             .select(
                 col("city").alias("city_lookup"),
                 col("city_normalized"),
-                #col("cap").alias("cap_lookup"),
+                col("cap").alias("cap_lookup"),
                 col("province").alias("province_lookup"),
                 col("province_ext").alias("province_ext_lookup"),
                 col("region").alias("region_lookup"),
@@ -1189,22 +1377,19 @@ class DataIngestion:
             )
         )
 
-        """ --------------------------------------------------
-         Extracts province from job_site: matches parenthesis with two characters, i.e (MI)
-         "Via Roma 10 Milano (MI)" -> mi
-        it tries to match these cases:
-        Milano (MI)        -> MI
-        Milano (MI )       -> MI
-        Milano ( MI)       -> MI
-        Milano ( MI )      -> MI
-        if there is no match, it losens up and looks for these matches too:
-        Milano (  MI       -> MI
-        Milano    MI )     -> MI
-        Milano (MI         -> MI
-        Milano MI)         -> MI
-        Milano    MI       -> MI
-        Milano             -> NUll
-         -------------------------------------------------- """
+
+        # ------------------------------------------------------------------
+        # Extract the province abbreviation from the end of job_site.
+        #
+        # Supported examples:
+        # - Milano (MI)
+        # - Milano ( MI )
+        # - Milano MI
+        # - Milano MI)
+        #
+        # If no province can be extracted, the value remains NULL.
+        # -----------------------------------------------------------------
+
         df_candidate = (
             df_candidate
             .with_column(
@@ -1234,13 +1419,19 @@ class DataIngestion:
             )
         )
 
-        # --------------------------------------------------
-        # Matches candidates with cities sharing the same province.
-        # 1. Joins df_candidate and df_cities based on province (extracted from job_site string). this limits the city search on the province only
-        # if there is no province match,
-        # 2. Keeps only the rows where there is a match between a city in the job_site string and a city in df_cities
-        # 3. Computes match_end_position as the position the last charater of the city in the job_site string 
-        # --------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # Generate city matches.
+        #
+        # When a province has been extracted, limit matching to cities
+        # belonging to that province.
+        #
+        # For each valid city match, compute:
+        # - city length
+        # - position of the city occurrence within job_site
+        # - ending position of the matched city
+        # ------------------------------------------------------------------
+
         matches = (
             df_candidate
             .join(
@@ -1276,14 +1467,22 @@ class DataIngestion:
             )
         )
 
-        # --------------------------------------------------
-        # Ranks the matches and takes the first one: extracts the city that ends at the rightest position in the job_site_string. if there is a tie, the longest city my be taken.
-        # "Via Roma 10 Milano (MI)" -> "Milano"
-        # "Via Milano 10, Roma (RM)" -> "Roma"
-        # "Via Roma 10, Villanova di Camposampiero (PD)" -> "Villanova di Camposampiero"
-        # "Via  Villanova di Camposampiero 10 Camposampiero (PD)" -> "Camposampiero"
-        # "Via Roma 10, Bolzano Vicentino (VI)" -> "Bolzano Vicentino"
-        # --------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # Select the best city match.
+        #
+        # Preference order:
+        # 1. City appearing furthest to the right in job_site.
+        # 2. Longest city name.
+        # 3. Alphabetical tie-breaker.
+        #
+        # Examples:
+        # - "Via Milano 10, Roma (RM)" -> Roma
+        # - "Via Roma 10 Milano (MI)" -> Milano
+        # - "Via Roma 10, Villanova di Camposampiero (PD)" -> Villanova di Camposampiero
+        # - "Via Roma 10, Bolzano Vicentino (VI)" -> "Bolzano Vicentino"
+        # ------------------------------------------------------------------
+
         ranking_window = (
             Window
             .partition_by(col("candidate_id_bh"))
@@ -1302,15 +1501,19 @@ class DataIngestion:
             .filter(col("rn") == 1)
         )
 
-        # --------------------------------------------------
-        # Selects fields
-        # Starting from the city, we can't fetch the cap
-        # --------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # Build the enrichment dataset.
+        #
+        # CAP cannot be reliably derived because a city may be associated with multiple CAP values.
+        # ------------------------------------------------------------------
 
         extracted = (
             best_match
             .select(
                 col("candidate_id_bh"),
+                col("cap_lookup")
+                    .alias("job_site_cap"),
                 col("city_normalized")
                     .alias("job_site_city"),
                 col("province_lookup")
@@ -1326,9 +1529,11 @@ class DataIngestion:
             )
         )
 
-        # --------------------------------------------------
-        # Merge finale
-        # --------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # Merge extracted geographic information back into the candidate
+        # dataset.
+        # ------------------------------------------------------------------
 
         df = (
             df_candidate
@@ -1343,31 +1548,58 @@ class DataIngestion:
         return df
 
 
-    def create_comuni_dataframe(
-        self,
-        session,
-    ):
+    def create_geo_table(
+            self, 
+            session
+            ):
         """
-        Reads the Italian municipalities JSON file and returns
-        a cleaned Snowpark DataFrame.
+        Build the Italian cities reference table from the source JSON file.
+
+        The output contains one row per city-CAP combination and includes:
+        - administrative information (city, province, region)
+        - coordinates
+        - cadastral code
+        - CAP-related metadata
 
         Output columns:
-            nome        STRING
-            sigla       STRING
-            cap         STRING
-            cap_list    ARRAY<STRING>
-            capoluogo   BOOLEAN
-            lat         DOUBLE
-            lng         DOUBLE
-            regione     STRING
-            provincia   STRING
+            cap                 STRING
+            city                STRING
+            city_normalized     STRING
+            province            STRING
+            province_ext        STRING
+            region              STRING
+            has_multiple_caps   BOOLEAN
+            is_capoluogo        BOOLEAN
+            cadastral_code      STRING
+            lat                 DOUBLE
+            lng                 DOUBLE
+
+        Args:
+            session (Session): Snowpark session.
+
+        Returns:
+            DataFrame: Cleaned geographic reference table.
         """
 
         config = self.config
         italian_cities_file = config.italian_cities.input_file
 
+
+        # ------------------------------------------------------------------
+        # Load municipalities from the source JSON file.
+        # ------------------------------------------------------------------
+
         with open(italian_cities_file, "r", encoding="utf-8") as f:
             comuni = json.load(f)
+
+
+        # ------------------------------------------------------------------
+        # Transform source records into a flat structure.
+        #
+        # A municipality may have multiple CAP values.
+        # Generate one output row per CAP so that lookups can be performed
+        # directly on a single CAP value.
+        # ------------------------------------------------------------------
 
         rows = []
         for comune in comuni:
@@ -1394,6 +1626,21 @@ class DataIngestion:
             regione = comune.get("regione") or {}
             provincia = comune.get("provincia") or {}
 
+            for cap in normalized_caps or [None]:
+                rows.append({
+                    "cap": cap,
+                    "city": comune.get("nome"),
+                    "province": comune.get("sigla"),
+                    "province_ext": provincia.get("nome"),
+                    "region": regione.get("nome"),
+                    "has_multiple_caps": len(normalized_caps) > 1,
+                    "is_capoluogo": comune.get("capoluogo"),
+                    "cadastral_code": comune.get("codiceCatastale"),
+                    "lat": coordinates.get("lat"),
+                    "lng": coordinates.get("lng"),
+                })
+
+            """
             rows.append({
                 "city": comune.get("nome"),
                 "province": comune.get("sigla"),
@@ -1406,22 +1653,25 @@ class DataIngestion:
                 "region": regione.get("nome"),
                 "province_ext": provincia.get("nome"),
             })
+            """
+
 
         # ------------------------------------------------------------------
-        # Schema
+        # Define the Snowpark schema.
         # ------------------------------------------------------------------
 
         schema = StructType([
+            StructField("cap", StringType()),
+            #StructField("cap_list", ArrayType(StringType())),
             StructField("city", StringType()),
             StructField("province", StringType()),
-            StructField("cap", StringType()),
-            StructField("cap_list", ArrayType(StringType())),
+            StructField("province_ext", StringType()),
+            StructField("region", StringType()),
             StructField("has_multiple_caps", BooleanType()),
+            StructField("is_capoluogo", BooleanType()),
+            StructField("cadastral_code", StringType()),
             StructField("lat", DoubleType()),
             StructField("lng", DoubleType()),
-            StructField("is_capoluogo", BooleanType()),
-            StructField("region", StringType()),
-            StructField("province_ext", StringType()),
         ])
 
         df = session.create_dataframe(
@@ -1429,65 +1679,50 @@ class DataIngestion:
             schema=schema
         )
 
-        def build_normalize_city_udf():
-            def normalize_city(city: str) -> str:
 
-                import unicodedata
+        # ------------------------------------------------------------------
+        # Build normalized lookup fields used during city matching.
+        # ------------------------------------------------------------------
 
-                if city is None:
-                    return None
+        normalize_city_udf = self.build_normalize_city_udf()
 
-                city = city.strip()
-                if not city:
-                    return None
-
-                # Minuscolo e normalizzazione Unicode
-                city = unicodedata.normalize("NFKD", city.casefold())
-                # Rimozione degli accenti
-                city = "".join(
-                    char for char in city
-                    if not unicodedata.combining(char)
+        df = (
+            df
+            .with_column(
+                "CITY_NORMALIZED",
+                normalize_city_udf(col("CITY"))
                 )
-                # Punteggiatura e separatori diventano spazi
-                city = re.sub(r"[^a-z0-9]+", " ", city)
-                # Spazi multipli
-                city = re.sub(r"\s+", " ", city).strip()
+            .with_column(
+                "PROVINCE",
+                lower(col("PROVINCE"))
+                )
+            .with_column(
+                "PROVINCE_EXT",
+                normalize_city_udf(col("PROVINCE_EXT"))
+            )            
+            .with_column(
+                "REGION",
+                normalize_city_udf(col("REGION"))
+            )
+        )
 
-                return city
-            return udf(normalize_city, return_type=StringType(), input_types=[StringType()])
+
+        # ------------------------------------------------------------------
+        # Standardize string fields.
+        #
+        # - Collapse consecutive spaces.
+        # - Trim leading and trailing spaces.
+        # - Convert empty strings to NULL.
+        # ------------------------------------------------------------------
         
-        normalize_city_udf = build_normalize_city_udf()
-
-        df = df.with_column(
-            "CITY_NORMALIZED",
-            normalize_city_udf(col("CITY"))
-        )
-
-        df = df.with_column(
-            "PROVINCE",
-            lower(col("PROVINCE"))
-        )
-
-        df = df.with_column(
-            "PROVINCE_EXT",
-            normalize_city_udf(col("PROVINCE_EXT"))
-        )
-
-        df = df.with_column(
-            "REGION",
-            normalize_city_udf(col("REGION"))
-        )
-
-        string_columns = [
-            "city",
-            "city_normalized",
-            "province",
-            "cap",
-            "region",
-            "province_ext",
+        string_cols = [
+            f.name
+            for f in df.schema.fields
+            if f.datatype.__class__.__name__ == "StringType"
         ]
 
-        for c in string_columns:
+        for c in string_cols:
+
             cleaned = trim(
                 regexp_replace(
                     col(c),
@@ -1504,53 +1739,165 @@ class DataIngestion:
                 ).otherwise(cleaned)
             )
 
-        # ------------------------------------------------------------------
-        # Latitude and Longitudevalidation
-        # Latitude valid range: [-90, 90]
-        # Longitude valid range: [-180, 180]
-        # Invalid values -> NaN
-        # ------------------------------------------------------------------
 
-        df = df.with_column(
-            "lat",
-            when(
-                col("lat").is_null(),
-                lit(float("nan"))
-            ).when(
-                (col("lat") >= -90)
-                & (col("lat") <= 90),
-                col("lat")
-            ).otherwise(
-                lit(float("nan"))
+        # ------------------------------------------------------------------
+        # Validate geographic coordinates.
+        #
+        # Latitude range:  [-90, 90]
+        # Longitude range: [-180, 180]
+        #
+        # Missing or invalid values are replaced with NaN.
+        # -----------------------------------------------------------------
+
+        df = (
+            df
+            .with_column(
+                "lat",
+                when(
+                    col("lat").is_null(),
+                    lit(float("nan"))
+                ).when(
+                    (col("lat") >= -90)
+                    & (col("lat") <= 90),
+                    col("lat")
+                ).otherwise(
+                    lit(float("nan"))
+                )
             )
-        )
-
-        df = df.with_column(
-            "lng",
-            when(
-                col("lng").is_null(),
-                lit(float("nan"))
-            ).when(
-                (col("lng") >= -180)
-                & (col("lng") <= 180),
-                col("lng")
-            ).otherwise(
-                lit(float("nan"))
+            .with_column(
+                "lng",
+                when(
+                    col("lng").is_null(),
+                    lit(float("nan"))
+                ).when(
+                    (col("lng") >= -180)
+                    & (col("lng") <= 180),
+                    col("lng")
+                ).otherwise(
+                    lit(float("nan"))
+                )
             )
         )
 
         return df
 
 
-    def write_table(self, df, table_name = 'output_table'):
-        """Writes dataframe in Snowflake
+    def build_normalize_city_udf(
+            self
+            ):
+        """
+        Build a UDF that converts geographic names into a normalized format
+        suitable for matching and lookup operations.
 
-        Args:
-            df (Snowpark Dataframe): dataframe
-            table_name (string): name of the Snowflake table
+        The normalization logic:
+        - converts text to lowercase
+        - removes accents and diacritics
+        - replaces punctuation and separators with spaces
+        - collapses consecutive spaces
+        - trims leading and trailing spaces
+        - converts empty strings to NULL
+
+        Examples:
+            "Milàno"                    -> "milano"
+            "Reggio-Emilia"             -> "reggio emilia"
+            "L'Aquila"                  -> "l aquila"
+            "  Villanova   d'Ardenghi " -> "villanova d ardenghi"
+
+        Returns:
+            UserDefinedFunction: Snowpark UDF returning a normalized string.
         """
 
-        df.write.save_as_table(table_name, mode="overwrite")
+        def normalize_city(city: str) -> str:
+
+            import unicodedata
+
+            if city is None:
+                return None
+
+            # --------------------------------------------------------------
+            # Remove leading/trailing spaces and convert empty strings
+            # to NULL.
+            # --------------------------------------------------------------
+
+            city = city.strip()
+            if not city:
+                return None
+
+            # --------------------------------------------------------------
+            # Normalize Unicode characters and convert to lowercase.
+            #
+            # Example:
+            # "À" -> "à"
+            # --------------------------------------------------------------
+            city = unicodedata.normalize(
+                "NFKD", 
+                city.casefold()
+                )
+
+
+            # --------------------------------------------------------------
+            # Remove accents and diacritical marks.
+            #
+            # Example:
+            # "milàno" -> "milano"
+            # --------------------------------------------------------------
+
+            city = "".join(
+                char for char in city
+                if not unicodedata.combining(char)
+            )
+
+
+            # --------------------------------------------------------------
+            # Replace punctuation and non-alphanumeric characters
+            # with spaces.
+            #
+            # Examples:
+            # "l'aquila" -> "l aquila"
+            # "reggio-emilia" -> "reggio emilia"
+            # -----------
+
+            city = re.sub(
+                r"[^a-z0-9]+", 
+                " ", 
+                city)
+
+
+            # --------------------------------------------------------------
+            # Collapse consecutive spaces and trim the result.
+            # --------------------------------------------------------------
+
+            city = re.sub(
+                r"\s+", 
+                " ", 
+                city).strip()
+
+            return city
+        
+        return udf(
+            normalize_city, 
+            return_type=StringType(), 
+            input_types=[StringType()]
+            )
+        
+
+    def write_table(
+            self, 
+            df, 
+            table_name = 'output_table'
+            ):
+        """Write a dataframe to a Snowflake table.
+
+        Args:
+            df (DataFrame): Snowpark dataframe to write.
+            table_name (str): Target Snowflake table name.
+        """
+
+        df.write.save_as_table(
+            table_name, 
+            mode="overwrite"
+            )
+        
         logger.info(f"Table {table_name} successfully written")
 
 

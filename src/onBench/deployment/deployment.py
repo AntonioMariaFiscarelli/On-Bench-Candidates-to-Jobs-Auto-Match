@@ -204,6 +204,7 @@ class Deployment:
                 logger.info(f"Task {task_name} successfully deleted.")
             else:
                 logger.info(f"Task {task_name} does not exist yet.")
+                
 
     def reset_pipeline(self, session):
         """Resets workflows, deletes all log tables
