@@ -29,25 +29,31 @@ class DataIngestionTrainingPipeline:
 
 
 
-        #df = data_ingestion.create_geo_table(session)
-        #data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
+        df = data_ingestion.create_geo_table(session)
+        data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
+        df = data_ingestion.build_geo_distance_table(session)
+        data_ingestion.write_table(df, data_ingestion.config.italian_cities.distance_table, mode = "append") 
         
         
-        
-        df = data_ingestion.read_table_joborder(session)
-        data_ingestion.write_table(df, data_ingestion.config.joborder.output_table)
+        #df = data_ingestion.read_table_joborder(session)
+        #data_ingestion.write_table(df, data_ingestion.config.joborder.output_table)
         df = data_ingestion.clean_table_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
-        df = data_ingestion.enrich_geo_info_from_city_joborder(session)
+        df = data_ingestion.resolve_location_joborder(session)
+        data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
+        df = data_ingestion.enrich_location_joborder(session)
         df = df.limit(100)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         
         
-        df = data_ingestion.read_table_candidate(session)
-        data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
+        
+        #df = data_ingestion.read_table_candidate(session)
+        #data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
         df = data_ingestion.clean_table_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
-        df = data_ingestion.enrich_geo_info_from_city_candidate(session)
+        df = data_ingestion.resolve_location_candidate(session)
+        data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)        
+        df = data_ingestion.enrich_location_candidate(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
         df = data_ingestion.extract_geo_info_job_site(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)

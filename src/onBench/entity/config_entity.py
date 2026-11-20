@@ -72,6 +72,7 @@ class JoborderIngestionConfig:
 class ItalianCitiesIngestionConfig:
     input_file: str
     output_table: str
+    distance_table: str
 
 @dataclass(frozen=True)
 class DataIngestionConfig:

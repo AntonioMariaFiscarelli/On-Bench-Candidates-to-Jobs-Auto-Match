@@ -1,10 +1,12 @@
 from src.onBench import logger
 
 from snowflake.snowpark.functions import col, coalesce, lit, regexp_replace, when, length, trim, lower, udf, to_varchar
-from snowflake.snowpark.functions import expr, iff, call_function, row_number, substring
+from snowflake.snowpark.functions import expr, iff, call_function, row_number, substring, count_distinct, avg, min, greatest
 from snowflake.snowpark.types import StructType, StructField, StringType, DoubleType, BooleanType
-from snowflake.snowpark.window import Window
 
+from snowflake.snowpark.functions import abs, round, radians, sin, cos, asin, sqrt
+
+from snowflake.snowpark.window import Window
 
 import pandas as pd
 import json
@@ -28,7 +30,7 @@ class DataIngestion:
         self.config = config
         self.domain_config = domain_config
 
-    def clean_description(
+    def _clean_description(
             self, 
             df, 
             column = "description_cleaned",
@@ -52,6 +54,8 @@ class DataIngestion:
 
         #df = df.filter((col(column).is_not_null()) & (trim(col(column)) != ""))
         
+        original_columns = df.columns
+
         # ------------------------------------------------------------------
         # Remove long meaningless sequences from descriptions, such as:
         # - base64-encoded content
@@ -165,9 +169,110 @@ class DataIngestion:
 
         logger.info(f"Column {column} successfully cleaned")
 
+        df = df.select(*original_columns)
+
         return df
 
 
+    def _build_normalize_city_udf(
+            self
+            ):
+        """
+        Build a UDF that converts geographic names into a normalized format
+        suitable for matching and lookup operations.
+
+        The normalization logic:
+        - converts text to lowercase
+        - removes accents and diacritics
+        - replaces punctuation and separators with spaces
+        - collapses consecutive spaces
+        - trims leading and trailing spaces
+        - converts empty strings to NULL
+
+        Examples:
+            "Milàno"                    -> "milano"
+            "Reggio-Emilia"             -> "reggio emilia"
+            "L'Aquila"                  -> "l aquila"
+            "  Villanova   d'Ardenghi " -> "villanova d ardenghi"
+
+        Returns:
+            UserDefinedFunction: Snowpark UDF returning a normalized string.
+        """
+
+        def normalize_city(city: str) -> str:
+
+            import unicodedata
+
+            if city is None:
+                return None
+
+            # --------------------------------------------------------------
+            # Remove leading/trailing spaces and convert empty strings
+            # to NULL.
+            # --------------------------------------------------------------
+
+            city = city.strip()
+            if not city:
+                return None
+
+            # --------------------------------------------------------------
+            # Normalize Unicode characters and convert to lowercase.
+            #
+            # Example:
+            # "À" -> "à"
+            # --------------------------------------------------------------
+            city = unicodedata.normalize(
+                "NFKD", 
+                city.casefold()
+                )
+
+
+            # --------------------------------------------------------------
+            # Remove accents and diacritical marks.
+            #
+            # Example:
+            # "milàno" -> "milano"
+            # --------------------------------------------------------------
+
+            city = "".join(
+                char for char in city
+                if not unicodedata.combining(char)
+            )
+
+
+            # --------------------------------------------------------------
+            # Replace punctuation and non-alphanumeric characters
+            # with spaces.
+            #
+            # Examples:
+            # "l'aquila" -> "l aquila"
+            # "reggio-emilia" -> "reggio emilia"
+            # -----------
+
+            city = re.sub(
+                r"[^a-z0-9]+", 
+                " ", 
+                city)
+
+
+            # --------------------------------------------------------------
+            # Collapse consecutive spaces and trim the result.
+            # --------------------------------------------------------------
+
+            city = re.sub(
+                r"\s+", 
+                " ", 
+                city).strip()
+
+            return city
+        
+        return udf(
+            normalize_city, 
+            return_type=StringType(), 
+            input_types=[StringType()]
+            )
+
+        
     def read_table_candidate(
             self, 
             session
@@ -712,8 +817,8 @@ class DataIngestion:
                 job_title,
                 position_esco,
                 ruolo_lavorativo_standard_mpg,
-                city,
                 cap,
+                city,
                 region,
                 /*
                 salary,
@@ -722,17 +827,18 @@ class DataIngestion:
                 requisiti,
                 */
                 job_site,
+                parttime_percent,
                 ccnl_level,
                 legal_category,
                 ccnl_code,
                 ccnl_description,
-                parttime_percent,
                 /*
                 titoli_richiesti,
                 descrizione_uso_interno,
                 testo_pubblicazione,
                 richieste_aggiuntive,
                 */
+                /*
                 CASE 
                     WHEN date_last_modified IS NULL AND last_status_change IS NULL THEN NULL
                     ELSE GREATEST(
@@ -740,6 +846,7 @@ class DataIngestion:
                     COALESCE(last_status_change, TO_TIMESTAMP('0001-01-01 00:00:00'))
                     )
                 END AS date_last_active,
+                */
                 IFF(
                     COALESCE(
                         NULLIF(TRIM(skills), ''),
@@ -801,12 +908,13 @@ class DataIngestion:
 
         df = session.table(f"{database}.{schema}.{input_table}")  
 
+        original_columns = df.columns
 
         # ------------------------------------------------------------------
         # Apply description cleaning and normalization.
         # ------------------------------------------------------------------
 
-        df = self.clean_description(df, "description", max_tokens)
+        df = self._clean_description(df, "description", max_tokens)
         
 
         # ------------------------------------------------------------------
@@ -818,13 +926,13 @@ class DataIngestion:
         df = (
             df
             .with_column(
-                "PARTTIME_PERC",
-                coalesce(col("PARTTIME_PERC"), lit(100))
+                "parttime_perc",
+                coalesce(col("parttime_perc"), lit(100))
             )
             .with_column(
-                "PARTTIME_PERC",
-                when(col("PARTTIME_PERC") == 0, None)
-                .otherwise(col("PARTTIME_PERC"))
+                "parttime_perc",
+                when(col("parttime_perc") == 0, None)
+                .otherwise(col("parttime_perc"))
             )
         )
 
@@ -833,9 +941,9 @@ class DataIngestion:
         # ------------------------------------------------------------------
 
         df = df.with_column(
-            "CCNL_CODE", 
+            "ccnl_code", 
             to_varchar(
-                col("CCNL_CODE").cast("int")
+                col("ccnl_code").cast("int")
                 )
         )
 
@@ -865,25 +973,30 @@ class DataIngestion:
         # Normalize geographic fields used for matching.
         # ------------------------------------------------------------------
 
-        normalize_city_udf = self.build_normalize_city_udf()
+        normalize_city_udf = self._build_normalize_city_udf()
 
         df = (
             df 
             .with_column(
-                "CITY",
-                normalize_city_udf(col("CITY"))
+                "city",
+                normalize_city_udf(col("city"))
             ) 
             .with_column(
-                "PROVINCE",
-                normalize_city_udf(col("PROVINCE"))
+                "province",
+                normalize_city_udf(col("province"))
             )
             .with_column(
-                "JOB_SITE_NORM",
-                normalize_city_udf(col("JOB_SITE"))
+                "job_site_norm",
+                normalize_city_udf(col("job_site"))
             )
         )
 
         logger.info(f"Table {input_table} successfully cleaned")
+
+        df = df.select(
+            *original_columns,
+            "job_site_norm"
+            )
 
         return df
 
@@ -905,7 +1018,7 @@ class DataIngestion:
             session (Session): Snowflake session.
 
         Returns:
-            DataFrame: Cleaned joborder dataframe.
+             DataFrame: Cleaned joborder dataframe.
         """
 
         config = self.config
@@ -915,6 +1028,109 @@ class DataIngestion:
         max_tokens = config.llm.max_tokens
 
         df = session.table(f"{database}.{schema}.{input_table}")
+
+        original_columns = df.columns
+        
+        # ------------------------------------------------------------------
+        # Standardize part-time percentage:
+        # - missing values default to 100
+        # - 0 is treated as unknown
+        # ------------------------------------------------------------------
+
+        df = (
+            df
+
+            # 1. Normalizzazione
+            .with_column(
+                "normalized_value",
+                regexp_replace(
+                    lower(trim(col("parttime_percent"))),
+                    ",",
+                    "."
+                )
+            )
+
+            # 2. Estrazione primo numero
+            .with_column(
+                "number_1",
+                call_function(
+                    "TRY_TO_DOUBLE",
+                    call_function(
+                        "REGEXP_SUBSTR",
+                        col("normalized_value"),
+                        r"[0-9]+([.][0-9]+)?",
+                        lit(1),
+                        lit(1),
+                        lit("e"),
+                        lit(0)
+                    )
+                )
+            )
+
+            # 3. Estrazione secondo numero
+            .with_column(
+                "number_2",
+                call_function(
+                    "TRY_TO_DOUBLE",
+                    call_function(
+                        "REGEXP_SUBSTR",
+                        col("normalized_value"),
+                        r"[0-9]+([.][0-9]+)?",
+                        lit(1),
+                        lit(2),
+                        lit("e"),
+                        lit(0)
+                    )
+                )
+            )
+
+            # 4. Estrazione ore
+            .with_column(
+                "hours_value",
+                call_function(
+                    "TRY_TO_DOUBLE",
+                    call_function(
+                        "REGEXP_SUBSTR",
+                        col("normalized_value"),
+                        r"^[ ]*([0-9]+([.][0-9]+)?)[ ]+ore$",
+                        lit(1),
+                        lit(1),
+                        lit("e"),
+                        lit(1)
+                    )
+                )
+            )
+
+            # 5. Conversione finale
+            .with_column(
+                "parttime_percent",
+                when(
+                    col("normalized_value").isin("part time", "si"),
+                    lit(50.0)
+                )
+                .when(
+                    col("hours_value").is_not_null(),
+                    col("hours_value") * lit(2.5)
+                )
+                .when(
+                    col("number_2").is_not_null(),
+                    greatest(col("number_1"), col("number_2"))
+                )
+                .when(
+                    col("number_1").is_not_null(),
+                    col("number_1")
+                )
+                .otherwise(lit(100.0))
+            )
+
+            # 6. Rimozione colonne temporanee
+            .drop(
+                "normalized_value",
+                "number_1",
+                "number_2",
+                "hours_value"
+            )
+        )
 
         # ------------------------------------------------------------------
         # Standardize all string columns:
@@ -935,17 +1151,17 @@ class DataIngestion:
         # Normalize geographic fields used for matching.
         # ------------------------------------------------------------------
         
-        normalize_city_udf = self.build_normalize_city_udf()
+        normalize_city_udf = self._build_normalize_city_udf()
 
         df = (
             df
             .with_column(
-                "CITY",
-                normalize_city_udf(col("CITY"))
+                "city",
+                normalize_city_udf(col("city"))
             ) 
             .with_column(
-                "REGION",
-                normalize_city_udf(col("REGION"))
+                "region",
+                normalize_city_udf(col("region"))
             )
         )
 
@@ -960,364 +1176,1135 @@ class DataIngestion:
         # - perform text standardization
         # ------------------------------------------------------------------
         
-        df = self.clean_description(df, "description", max_tokens)
+        df = self._clean_description(df, "description", max_tokens)
         #df = self.clean_description(df, "descrizione_uso_interno")
         #df = self.clean_description(df, "testo_pubblicazione")
 
         
         logger.info(f"Table {input_table} successfully cleaned")
 
+        df = df.select(*original_columns)
+
         return df
 
 
-    def enrich_geo_info_from_city_candidate(
-            self, 
+    def resolve_location_candidate(
+            self,
             session
             ):
-
         """
-        Enrich candidate geographic information using the Italian cities
-        reference table.
-
-        The enrichment logic is as follows:
-
-        - Validate candidate CAP against the list of known CAPs.
-        - Match candidate city against the normalized city lookup.
-        - If the candidate CAP is invalid and a city match exists,
-        replace the CAP with the lookup CAP.
-        - Populate province, province_ext, region, latitude and longitude
-        from the lookup when a city match exists.
-        - Preserve the original column values when no city match is available.
+        Resolve CAP and city for candidate table.
 
         Args:
-            session (Session): Snowpark session.
+            session (Session): Snowflake session.
+            df (DataFrame): dataframe to be enriched
 
         Returns:
-            DataFrame: Candidate dataframe enriched with geographic information.
+            DataFrame: enriched dataframe.
         """
 
         config = self.config
         database = config.database
         schema = config.output_schema
         candidate_table = config.candidate.output_cleaned_table
-        italian_cities_table = config.italian_cities.output_table
 
         df_candidate = session.table(
             f"{database}.{schema}.{candidate_table}"
         )
 
-        df_cities_raw = session.table(
-            f"{database}.{schema}.{italian_cities_table}"
-        )
-
-        # ------------------------------------------------------------------
-        # Build the list of valid CAP values.
-        # ------------------------------------------------------------------
-        
-        valid_caps = (
-            df_cities_raw
-            .select(col("cap"))
-            .distinct()
-            .with_column_renamed("cap", "valid_cap")
-        )
-
-
-        # ------------------------------------------------------------------
-        # Build a city lookup table.
-        #
-        # Multiple rows may exist for the same normalized city. Keep a single
-        # physical row so that CAP, province, region and coordinates always
-        # originate from the same source record.
-        # ------------------------------------------------------------------
-
-        city_window = (
-            Window
-            .partition_by("city_normalized")
-            .order_by("cap")
-        )
-
-        df_cities = (
-            df_cities_raw
-            .with_column(
-                "_rn",
-                row_number().over(city_window)
-            )
-            .filter(col("_rn") == 1)
-            .drop("_rn")
-            .select(
-                col("city_normalized").alias("city_lookup"),
-                col("cap").alias("cap_lookup"),
-                col("province").alias("province_lookup"),
-                col("province_ext").alias("province_ext_lookup"),
-                col("region").alias("region_lookup"),
-                col("lat").alias("lat_lookup"),
-                col("lng").alias("lng_lookup")
-            )
-        )
-
-
-        # ------------------------------------------------------------------
-        # Join candidate records with:
-        # - the city lookup table
-        # - the list of valid CAP values
-        #
-        # This allows us to determine whether:
-        # - the city exists in the reference dataset
-        # - the CAP is valid
-        # ------------------------------------------------------------------
-        
-        lookup = (
-            df_candidate
-            .join(
-                df_cities,
-                col("city") == col("city_lookup"),
-                "left"
-            )
-            .join(
-                valid_caps,
-                col("cap") == col("valid_cap"),
-                "left"
-            )
-        )
-
-
-        # ------------------------------------------------------------------
-        # Apply geographic enrichment.
-        #
-        # CAP:
-        # - Keep the CAP when it is valid.
-        # - Otherwise use the lookup CAP when available.
-        # - Otherwise preserve the original CAP.
-        #
-        # Geographic attributes:
-        # - Use lookup values when a city match exists.
-        # - Preserve existing values where applicable.
-        # ------------------------------------------------------------------
-
-        df = (
-            lookup
-            #.with_column("old_cap", col("cap"))
-            #.with_column("was_cap_replaced", col("valid_cap").is_null() & col("cap_lookup").is_not_null())
-            .with_column(
-                "cap",
-                when(
-                    col("valid_cap").is_null(),
-                    coalesce(
-                        col("cap_lookup"),
-                        col("cap")
-                    )
-                ).otherwise(col("cap"))
-            )
-            .with_column(
-                "province",
-                coalesce(
-                    col("province_lookup"),
-                    col("province")
-                )
-            )
-            .with_column(
-                "province_ext",
-                col("province_ext_lookup")
-            )
-            .with_column(
-                "region",
-                col("region_lookup")
-            )
-            .with_column(
-                "lat",
-                col("lat_lookup")
-            )
-            .with_column(
-                "lng",
-                col("lng_lookup")
-            )
-            #.with_column("is_geo_replaced", col("city_lookup").is_not_null())
-            .drop(
-                "city_lookup",
-                "cap_lookup",
-                "valid_cap",
-                "province_lookup",
-                "province_ext_lookup",
-                "region_lookup",
-                "lat_lookup",
-                "lng_lookup"
-            )
-        )
+        df = self._resolve_location(session, df_candidate)
 
         return df
 
 
-    def enrich_geo_info_from_city_joborder(
-            self, 
-            session):
-
+    def resolve_location_joborder(
+            self,
+            session
+            ):
         """
-        Enrich joborder geographic information using the Italian cities
-        reference table.
-
-        The enrichment logic is as follows:
-
-        - Validate joborder CAP against the list of known CAPs.
-        - Match joborder city against the normalized city lookup.
-        - If the joborder CAP is invalid and a city match exists,
-        replace the CAP with the lookup CAP.
-        - Populate province, province_ext, region, latitude and longitude
-        from the lookup when a city match exists.
-        - Preserve the original column values when no city match is available.
+        Resolve CAP and city for joborder table.
 
         Args:
-            session (Session): Snowpark session.
+            session (Session): Snowflake session.
 
         Returns:
-            DataFrame: Joborder dataframe enriched with geographic information.
+            DataFrame: enriched dataframe.
         """
 
         config = self.config
         database = config.database
         schema = config.output_schema
         joborder_table = config.joborder.output_cleaned_table
-        italian_cities_table = config.italian_cities.output_table
 
         df_joborder = session.table(
             f"{database}.{schema}.{joborder_table}"
         )
 
-        df_cities_raw = session.table(
-            f"{database}.{schema}.{italian_cities_table}"
-        )
+        df = self._resolve_location(session, df_joborder)
 
-        # ------------------------------------------------------------------
-        # Build the list of valid CAP values.
-        # ------------------------------------------------------------------
+        return df
+
+
+    def _resolve_location(
+            self,
+            session,
+            df
+            ):
+        """
+        Resolve and standardize locations using the ITALIAN_CITIES reference table.
+                    
+        Output columns:
+            - resolved_cap
+            - resolved_city
+
+        ==========
+        Input data
+
+        The candidate/joborder table must contains:
+            - cap
+            - city
+        The data may contain:
+            - correct CAPs and cities
+            - incorrect CAPs and cities
+            - missing CAPs and cities
+
+        The ITALIAN_CITIES reference table contains one row for each
+        unique (cap, city) pair and provides:
+            - cap
+            - city
+            - city_normalized
+            - province
+            - region
+            - lat
+            - lng
+
+        ================
+        Data assumptions
+
+        A (cap, city) pair uniquely identifies a location and therefore its coordinates.
+        The reference data exhibits the following characteristics:
+            - A city can be associated with multiple CAPs. This mainly occurs in large cities and therefore affects
+            a large proportion of candidates.
+            - A CAP can be associated with multiple cities. This mainly occurs in small villages and therefore affects
+            a relatively small proportion of candidates.
+
+        Because city ambiguity is more common than CAP ambiguity, CAP is treated as the most reliable location attribute and is
+        used as the primary source of truth whenever available.
+
+        ============
+        Resolved CAP
+
+        The resolved CAP is determined using the following priority:
+        1. VALID CAP
+            If the candidate CAP exists in ITALIAN_CITIES:
+                resolved_cap = cap
+        2. UNIQUE CITY → CAP
+            Otherwise, if the candidate city exists in ITALIAN_CITIES and is associated with exactly one CAP:
+                resolved_cap = corresponding CAP
+        3. UNRESOLVED
+            Otherwise:
+                resolved_cap = NULL
+
+        Examples:
+
+        1. 
+        cap = 20121
+        city = milano
+            -> resolved_cap = 20121
+
+        cap = NULL
+        city = novi ligure
+            novi ligure is associated with a single CAP
+            -> resolved_cap = 15067
+
+        3. 
+        cap = NULL
+        city = milano
+            roma is associated with many CAPs
+            -> resolved_cap = NULL
+
+        cap = 71100
+        city = Foggia
+            71100 does not exist anymore. Furthermore Foggia is associated with two different caps (71121, 71122)
+            -> resolved_cap = NULL
+
+        =============
+        Resolved City
+
+        The resolved city is determined using the following priority:
+        1. VALID CITY FOR RESOLVED CAP
+            If resolved_cap is valid:
+                - retrieve all cities associated with resolved_cap
+                - if the candidate city belongs to that set, keep the candidate city
+        2. UNIQUE CAP → CITY
+            Otherwise, if resolved_cap is valid and is associated with exactly one city:
+                resolved_city = corresponding city
+        3. VALID CITY
+            Otherwise, If resolved_cap is NULL and the candidate city exists in ITALIAN_CITIES:
+                resolved_city = city
+        4. UNRESOLVED
+            Otherwise:
+                resolved_city = NULL
+
+                
+        Examples:
+
+        1. 
+        cap = 15067
+        city = novi ligure
+            15067 -> novi ligure
+            -> resolved_city = novi ligure
+
+        cap = 10030
+        city = Rondissone
+            41049 is associated with:
+                - Maglione, Rondissone, Vestignè, Villareggia, e Vische
+            more than one possible city, but city matches Ronsissone
+            -> resolved_city = Rondissone
+
+        2.
+        cap = 15067
+        city = Null
+            15067 -> novi ligure
+            -> resolved_city = novi ligure
+
+        cap = 15067
+        city = Genova
+            15067 is associated with Novi Ligure, not Genova (probably a mistake)
+            -> resolved_city = novi ligure
+
+        3.
+        cap = NULL
+        city = milano
+            milano exists in ITALIAN_CITIES
+            -> resolved_city = milano
+
+        4. 
+        cap = 10030
+        city = invalid_city
+            41049 is associated with:
+                - Maglione, Rondissone, Vestignè, Villareggia, e Vische
+            more than one possible city
+            -> resolved_city = NULL
+
+        cap = NULL
+        city = invalid_city
+            -> resolved_city = NULL
+
+            
+        Args:
+            session (Session): Snowflake session.
+            df_entity (DataFrame): dataframe to be resolved
+
+        Returns:
+            DataFrame: resolved dataframe.
+        """
+
+        """
+        How to check that it works properly:
+
+        select cap, city, resolved_cap, resolved_city
+        from MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED --MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
+        where resolved_cap is null or resolved_city is null
+        --where cap != resolved_cap or city != resolved_city
+        """
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        italian_cities_table = config.italian_cities.output_table
+
+        original_columns = df.columns
+
+        df_exact = (
+            session.table(
+                f"{database}.{schema}.{italian_cities_table}"
+            )
+            .filter(col("location_type") == "EXACT")
+        )
 
         valid_caps = (
-            df_cities_raw
-            .select(col("cap"))
-            .distinct()
-            .with_column_renamed("cap", "valid_cap")
-        )
-
-
-        # ------------------------------------------------------------------
-        # Build a city lookup table.
-        #
-        # Multiple rows may exist for the same normalized city. Keep a single
-        # physical row so that CAP, province, region and coordinates always
-        # originate from the same source record.
-        # ------------------------------------------------------------------
-
-        city_window = (
-            Window
-            .partition_by("city_normalized")
-            .order_by("cap")
-        )
-
-        df_cities = (
-            df_cities_raw
-            .with_column(
-                "_rn",
-                row_number().over(city_window)
-            )
-            .filter(col("_rn") == 1)
-            .drop("_rn")
+            df_exact
             .select(
-                col("city_normalized").alias("city_lookup"),
-                col("cap").alias("cap_lookup"),
-                col("province").alias("province_lookup"),
-                col("province_ext").alias("province_ext_lookup"),
-                col("region").alias("region_lookup"),
-                col("lat").alias("lat_lookup"),
-                col("lng").alias("lng_lookup")
+                col("cap").alias("valid_cap")
+            )
+            .distinct()
+        )
+
+        valid_cities = (
+            df_exact
+            .select(
+                col("city_normalized").alias("valid_city")
+            )
+            .distinct()
+        )
+
+        # ------------------------------------------------------------------
+        # Cities associated with exactly one CAP.
+        # ------------------------------------------------------------------
+
+        city_unique_cap = (
+            df_exact
+            .group_by("city_normalized")
+            .agg(
+                count_distinct("cap").alias("cap_count"),
+                min("cap").alias("unique_cap")
+            )
+            .filter(col("cap_count") == 1)
+            .select(
+                col("city_normalized").alias("unique_city"),
+                col("unique_cap")
             )
         )
 
-
         # ------------------------------------------------------------------
-        # Join candidate records with:
-        # - the city lookup table
-        # - the list of valid CAP values
-        #
-        # This allows us to determine whether:
-        # - the city exists in the reference dataset
-        # - the CAP is valid
+        # CAPs associated with exactly one city.
         # ------------------------------------------------------------------
 
-        lookup = (
-            df_joborder
-            .join(
-                df_cities,
-                col("city") == col("city_lookup"),
-                "left"
+        cap_unique_city = (
+            df_exact
+            .group_by("cap")
+            .agg(
+                count_distinct("city_normalized").alias("city_count"),
+                min("city_normalized").alias("unique_city")
             )
+            .filter(col("city_count") == 1)
+            .select(
+                col("cap").alias("unique_cap"),
+                col("unique_city")
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Valid CAP/CITY pairs.
+        # ------------------------------------------------------------------
+
+        valid_pairs = (
+            df_exact
+            .select(
+                col("cap").alias("pair_cap"),
+                col("city_normalized").alias("pair_city")
+            )
+            .distinct()
+            .with_column(
+                "valid_pair",
+                lit(True)
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Resolve CAP.
+        # ------------------------------------------------------------------
+
+        df = (
+            df
             .join(
                 valid_caps,
                 col("cap") == col("valid_cap"),
                 "left"
             )
+            .join(
+                city_unique_cap,
+                col("city") == col("unique_city"),
+                "left"
+            )
+            .with_column(
+                "resolved_cap",
+                when(
+                    col("valid_cap").is_not_null(),
+                    col("cap")
+                )
+                .when(
+                    col("unique_cap").is_not_null(),
+                    col("unique_cap")
+                )
+                .otherwise(
+                    lit(None)
+                )
+            )
         )
 
-
         # ------------------------------------------------------------------
-        # Apply geographic enrichment.
-        #
-        # CAP:
-        # - Keep the CAP when it is valid.
-        # - Otherwise use the lookup CAP when available.
-        # - Otherwise preserve the original CAP.
-        #
-        # Geographic attributes:
-        # - Use lookup values when a city match exists.
-        # - Preserve existing values where applicable.
+        # Check whether city belongs to resolved CAP.
         # ------------------------------------------------------------------
 
         df = (
-            lookup
-            #.with_column("old_cap", col("cap"))
-            #.with_column("was_cap_replaced", col("valid_cap").is_null() & col("cap_lookup").is_not_null())
+            df
+            .join(
+                valid_pairs,
+                (
+                    col("resolved_cap") == col("pair_cap")
+                )
+                &
+                (
+                    col("city") == col("pair_city")
+                ),
+                "left"
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Lookup valid cities.
+        # ------------------------------------------------------------------
+
+        df = (
+            df
+            .join(
+                valid_cities,
+                col("city") == col("valid_city"),
+                "left"
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Resolve CITY.
+        # ------------------------------------------------------------------
+
+        cap_unique_city_lookup = (
+            cap_unique_city
+            .select(
+                col("unique_cap").alias("city_cap"),
+                col("unique_city").alias("resolved_city_lookup")
+            )
+        )
+
+        df = (
+            df
+            .join(
+                cap_unique_city_lookup,
+                col("resolved_cap") == col("city_cap"),
+                "left"
+            )
             .with_column(
-                "cap",
+                "resolved_city",
                 when(
-                    col("valid_cap").is_null(),
-                    coalesce(
-                        col("cap_lookup"),
-                        col("cap")
-                    )
-                ).otherwise(col("cap"))
-            )
-            .with_column(
-                "province",
-                col("province_lookup")
-            )
-            .with_column(
-                "province_ext",
-                col("province_ext_lookup")
-            )
-            .with_column(
-                "region",
-                coalesce(
-                    col("region_lookup"),
-                    col("region")
+                    col("resolved_cap").is_not_null()
+                    & col("valid_pair").is_not_null(),
+                    col("city")
+                )
+                .when(
+                    col("resolved_cap").is_not_null()
+                    & col("resolved_city_lookup").is_not_null(),
+                    col("resolved_city_lookup")
+                )
+                .when(
+                    col("resolved_cap").is_null()
+                    & col("valid_city").is_not_null(),
+                    col("city")
+                )
+                .otherwise(
+                    lit(None)
                 )
             )
+            .drop(
+                "valid_cap",
+                "valid_city",
+                "unique_city",
+                "unique_cap",
+                "pair_cap",
+                "pair_city",
+                "valid_pair",
+                "city_cap",
+                "resolved_city_lookup"
+            )
+        )
+
+        df = df.select(
+            *original_columns,
+            "resolved_cap",
+            "resolved_city"
+            )
+
+        return df
+
+
+    def enrich_location_candidate(
+            self,
+            session
+            ):
+        """
+        Populate coordinates and administrative information for candidate table.
+
+        Args:
+            session (Session): Snowflake session.
+
+        Returns:
+            DataFrame: enriched dataframe.
+        """
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        candidate_table = config.candidate.output_cleaned_table
+
+        df_candidate = session.table(
+            f"{database}.{schema}.{candidate_table}"
+        )
+
+        df = self._enrich_location(session, df_candidate)
+
+        return df
+
+
+    def enrich_location_joborder(
+            self,
+            session
+            ):
+        """
+        Populate coordinates and administrative information for joborder.
+
+        Args:
+            session (Session): Snowflake session.
+
+        Returns:
+            DataFrame: enriched dataframe.
+        """
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        joborder_table = config.joborder.output_cleaned_table
+
+        df_joborder = session.table(
+            f"{database}.{schema}.{joborder_table}"
+        )
+
+        df = self._enrich_location(session, df_joborder)
+
+        return df
+
+
+    def _enrich_location(
+            self,
+            session,
+            df):
+        """
+        Enrich dataframe with geographic coordinates and administrative information using resolved_cap and resolved_city.
+
+        Output columns:
+            - resolved_province
+            - resolved_region
+            - lat
+            - lng
+
+
+        ==============
+        Input datasets
+
+        Candidate tables must contain:
+            - resolved_cap
+            - resolved_city
+            - province
+        Joborder tables must contain:
+            - resolved_cap
+            - resolved_city
+            - region
+        The ITALIAN_CITIES table contains one row for each unique (cap, city) pair and provides:
+            - cap
+            - city_normalized
+            - province
+            - province_ext
+            - region
+            - lat
+            - lng
+
+        A CAP may correspond to multiple cities and a city may correspond to multiple CAPs.
+
+        =====================
+        Coordinate resolution
+
+        1. EXACT MATCH
+            If:
+                resolved_cap  = IC.cap
+                resolved_city = IC.city_normalized
+            then:
+                (lat = IC.lat, lng = IC.lng)
+        2. CAP FALLBACK
+            Otherwise if resolved_cap is available:
+                (lat = average(lat), lng = average(lng)) of all IC rows with that CAP
+        3. CITY FALLBACK
+            Otherwise if resolved_city is available:
+                (lat = average(lat), lng = average(lng)) of all IC rows with that CAP
+        4. NULL
+
+        ========
+        Examples
+
+        1.
+        resolved_cap  = 20121
+        resolved_city = milano
+            -> lat/lng from (20121, milano)
+
+        3.
+        resolved_cap  = NUll
+        resolved_city = milano
+            milano is associated with multiple CAPs
+                -> average coordinates of all milano locations
+
+        3.
+        resolved_cap = 10030
+        resolved_city = Null
+            10030 is associated with:
+                - Maglione, Rondissone, Vestignè, Villareggia, e Vische
+            more than one possible city, but city matches Ronsissone
+                -> average coordinates of all locations with CAP 10030
+
+        =========================
+        Administrative resolution for candidate table
+
+        1. EXACT MATCH
+            If (resolved_cap, resolved_city) matches a row in IC:
+                resolved_province = IC.province
+                resolved_region   = IC.region
+        2. CAP/CITY FALLBACK
+            If only one among resolved_cap and resolved_city can be used for the lookup:
+                - If all matching IC rows share the same province/region, use that province/region.
+                - Otherwise, if the candidate province matches one of the provinces found in IC, use the corresponding IC province and IC.region.
+        3. FINAL FALLBACK
+            If resolved_province or resolved_region are still NULL:
+                - If the input province is a valid province in IC, use it as resolved_province.
+                - If the input region is a valid region in IC, use it as resolved_region.
+
+        Administrative resolution for joborder table is equivalent to candidate, just replace province with region.
+
+        ========
+        Examples
+
+        1.
+            resolved_cap  = 20121
+            resolved_city = milano
+                -> province = MI
+                -> region   = Lombardia
+        2.
+            resolved_cap  = 10030
+            resolved_city = NULL
+            10030 is associated with:
+                - Maglione, Rondissone, Vestignè, Villareggia, e Vische
+                They all share the same province and region
+                -> province = TO
+                -> region   = Piemonte
+
+            resolved_cap  = 12071
+            resolved_city = NULL
+            province = SV
+            10030 is associated with:
+                - Bagnasco, Massimino
+                They share different province and region:
+                - Bagnasco
+                    - province = CN, region = piemonte
+                - Massimino
+                    - province = SV, region = liguria
+                -> province = SV
+                -> region   = Null
+
+            resolved_cap  = 12071
+            resolved_city = NULL
+            province = NULL
+            10030 is associated with:
+                - Bagnasco, Massimino
+                They share different province and region:
+                - Bagnasco
+                    - province = CN, region = piemonte
+                - Massimino
+                    - province = SV, region = liguria
+                -> province = NULL
+                -> region   = NULL
+
+            resolved_cap  = NULL
+            resolved_city = milano
+                Milano is associated with multiple CAPs, all share the same province and region
+                    -> province = MI
+                    -> region   = Lombardia
+        3.
+            Candidate:
+            resolved_cap  = NULL
+            resolved_city = NULL
+            province = MI
+                -> province = MI
+                -> region   = NULL
+
+            Joborder:
+            resolved_cap  = NULL
+            resolved_city = NULL
+            province = MI
+                -> province = MI
+                -> region   = NULL       
+
+
+        Args:
+            session (Session): Snowflake session.
+            df (DataFrame): dataframe to be enriched
+
+        Returns:
+            DataFrame: enriched dataframe.   
+        """
+
+        """
+        How to check that it works properly:
+ 
+        select region, resolved_cap, resolved_city, resolved_province, resolved_region
+        from MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED
+        where region != resolved_region and region != city --and resolved_region not in ('trentino alto adige sudtirol', 'valle d aosta vallee d aoste')
+        """
+
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        italian_cities_table = config.italian_cities.output_table
+
+        original_columns = df.columns
+        
+        ic_df = session.table(
+            f"{database}.{schema}.{italian_cities_table}"
+        )
+
+        columns_lower = [c.lower() for c in original_columns]
+
+        is_candidate = (
+            "province" in columns_lower
+            and "region" not in columns_lower
+        )
+
+        is_joborder = (
+            "region" in columns_lower
+            and "province" not in columns_lower
+        )
+
+        if not (is_candidate or is_joborder):
+            raise ValueError(
+                "Input dataframe must contain either province or region"
+            )
+
+        #
+        # EXACT LOOKUP
+        #
+        ic_exact = (
+            ic_df
+            .select(
+                col("cap").alias("exact_cap"),
+                col("city_normalized").alias("exact_city"),
+                col("province").alias("exact_province"),
+                col("province_ext").alias("exact_province_ext"),
+                col("region").alias("exact_region"),
+                col("lat").alias("exact_lat"),
+                col("lng").alias("exact_lng")
+            )
+        )
+
+        #
+        # CAP AGGREGATION
+        #
+        ic_by_cap = (
+            ic_df
+            .with_column_renamed("cap", "ic_by_cap_cap")
+            .group_by("ic_by_cap_cap")
+            .agg(
+                avg("lat").alias("cap_lat"),
+                avg("lng").alias("cap_lng"),
+
+                count_distinct("province").alias("cap_province_cnt"),
+                min("province").alias("cap_province"),
+                min("province_ext").alias("cap_province_ext"),
+
+                count_distinct("region").alias("cap_region_cnt"),
+                min("region").alias("cap_region")
+            )
+        )
+
+        #
+        # CITY AGGREGATION
+        #
+        ic_by_city = (
+            ic_df
+            .with_column_renamed("city_normalized", "ic_by_city_city")
+            .group_by("ic_by_city_city")
+            .agg(
+                avg("lat").alias("city_lat"),
+                avg("lng").alias("city_lng"),
+
+                count_distinct("province").alias("city_province_cnt"),
+                min("province").alias("city_province"),
+                min("province_ext").alias("city_province_ext"),
+
+                count_distinct("region").alias("city_region_cnt"),
+                min("region").alias("city_region")
+            )
+        )
+
+        #
+        # CAP + PROVINCE DISAMBIGUATION
+        #
+        ic_cap_province = (
+            ic_df
+            .select(
+                col("cap").alias("cpp_cap"),
+                col("province").alias("cpp_province"),
+                col("province_ext").alias("cpp_province_ext"),
+                col("region").alias("cpp_region")
+            )
+            .distinct()
+        )
+
+        #
+        # CITY + PROVINCE DISAMBIGUATION
+        #
+        ic_city_province = (
+            ic_df
+            .select(
+                col("city_normalized").alias("ctp_city"),
+                col("province").alias("ctp_province"),
+                col("province_ext").alias("ctp_province_ext"),
+                col("region").alias("ctp_region")
+            )
+            .distinct()
+        )
+
+        #
+        # CAP + REGION DISAMBIGUATION
+        #
+        ic_cap_region = (
+            ic_df
+            .select(
+                col("cap").alias("cpr_cap"),
+                col("province").alias("cpr_province"),
+                col("province_ext").alias("cpr_province_ext"),
+                col("region").alias("cpr_region")
+            )
+            .distinct()
+        )
+
+        #
+        # CITY + REGION DISAMBIGUATION
+        #
+        ic_city_region = (
+            ic_df
+            .select(
+                col("city_normalized").alias("ctr_city"),
+                col("province").alias("ctr_province"),
+                col("province_ext").alias("ctr_province_ext"),
+                col("region").alias("ctr_region")
+            )
+            .distinct()
+        )
+
+        #
+        # JOINS
+        #
+        df = (
+            df
+
+            .join(
+                ic_exact,
+                (
+                    (col("resolved_cap") == col("exact_cap"))
+                    &
+                    (col("resolved_city") == col("exact_city"))
+                ),
+                "left"
+            )
+
+            .join(
+                ic_by_cap,
+                col("resolved_cap") == col("ic_by_cap_cap"),
+                "left"
+            )
+
+            .join(
+                ic_by_city,
+                col("resolved_city") == col("ic_by_city_city"),
+                "left"
+            )
+        )
+
+        if is_candidate:
+
+            df = (
+                df
+
+                .join(
+                    ic_cap_province,
+                    (
+                        (col("resolved_cap") == col("cpp_cap"))
+                        &
+                        (col("province") == col("cpp_province"))
+                    ),
+                    "left"
+                )
+
+                .join(
+                    ic_city_province,
+                    (
+                        (col("resolved_city") == col("ctp_city"))
+                        &
+                        (col("province") == col("ctp_province"))
+                    ),
+                    "left"
+                )
+            )
+
+        else:
+
+            df = (
+                df
+
+                .join(
+                    ic_cap_region,
+                    (
+                        (col("resolved_cap") == col("cpr_cap"))
+                        &
+                        (col("region") == col("cpr_region"))
+                    ),
+                    "left"
+                )
+
+                .join(
+                    ic_city_region,
+                    (
+                        (col("resolved_city") == col("ctr_city"))
+                        &
+                        (col("region") == col("ctr_region"))
+                    ),
+                    "left"
+                )
+            )
+
+        #
+        # FLAGS
+        #
+        exact_match = col("exact_lat").is_not_null()
+
+        cap_match = (
+            (~exact_match)
+            &
+            col("resolved_cap").is_not_null()
+        )
+
+        city_match = (
+            (~exact_match)
+            &
+            col("resolved_cap").is_null()
+            &
+            col("resolved_city").is_not_null()
+        )
+
+        #
+        # LAT / LNG
+        #
+        df = (
+            df
+
             .with_column(
                 "lat",
-                col("lat_lookup")
+                when(
+                    exact_match,
+                    col("exact_lat")
+                )
+                .when(
+                    cap_match,
+                    col("cap_lat")
+                )
+                .when(
+                    city_match,
+                    col("city_lat")
+                )
+                .otherwise(lit(None))
             )
+
             .with_column(
                 "lng",
-                col("lng_lookup")
+                when(
+                    exact_match,
+                    col("exact_lng")
+                )
+                .when(
+                    cap_match,
+                    col("cap_lng")
+                )
+                .when(
+                    city_match,
+                    col("city_lng")
+                )
+                .otherwise(lit(None))
             )
-            #.with_column("is_geo_replaced", col("city_lookup").is_not_null())
-            .drop(
-                "city_lookup",
-                "cap_lookup",
-                "valid_cap",
-                "province_lookup",
-                "province_ext_lookup",
-                "region_lookup",
-                "lat_lookup",
-                "lng_lookup"
+        )
+
+        if is_candidate:
+
+            province_expr = (
+                when(
+                    exact_match,
+                    col("exact_province")
+                )
+                .when(
+                    cap_match
+                    & (col("cap_province_cnt") == 1),
+                    col("cap_province")
+                )
+                .when(
+                    cap_match,
+                    col("cpp_province")
+                )
+                .when(
+                    city_match
+                    & (col("city_province_cnt") == 1),
+                    col("city_province")
+                )
+                .when(
+                    city_match,
+                    col("ctp_province")
+                )
+                .otherwise(lit(None))
             )
+            """
+            province_ext_expr = (
+                when(
+                    exact_match,
+                    col("exact_province_ext")
+                )
+                .when(
+                    cap_match
+                    & (col("cap_province_cnt") == 1),
+                    col("cap_province_ext")
+                )
+                .when(
+                    cap_match,
+                    col("cpp_province_ext")
+                )
+                .when(
+                    city_match
+                    & (col("city_province_cnt") == 1),
+                    col("city_province_ext")
+                )
+                .when(
+                    city_match,
+                    col("ctp_province_ext")
+                )
+                .otherwise(lit(None))
+            )
+            """
+            
+            region_expr = (
+                when(
+                    exact_match,
+                    col("exact_region")
+                )
+                .when(
+                    cap_match
+                    & (col("cap_region_cnt") == 1),
+                    col("cap_region")
+                )
+                .when(
+                    cap_match,
+                    col("cpp_region")
+                )
+                .when(
+                    city_match
+                    & (col("city_region_cnt") == 1),
+                    col("city_region")
+                )
+                .when(
+                    city_match,
+                    col("ctp_region")
+                )
+                .otherwise(lit(None))
+            )
+
+        else:
+
+            province_expr = (
+                when(
+                    exact_match,
+                    col("exact_province")
+                )
+                .when(
+                    cap_match
+                    & (col("cap_province_cnt") == 1),
+                    col("cap_province")
+                )
+                .when(
+                    cap_match,
+                    col("cpr_province")
+                )
+                .when(
+                    city_match
+                    & (col("city_province_cnt") == 1),
+                    col("city_province")
+                )
+                .when(
+                    city_match,
+                    col("ctr_province")
+                )
+                .otherwise(lit(None))
+            )
+
+            """
+            province_ext_expr = (
+                when(
+                    exact_match,
+                    col("exact_province_ext")
+                )
+                .when(
+                    cap_match
+                    & (col("cap_province_cnt") == 1),
+                    col("cap_province_ext")
+                )
+                .when(
+                    cap_match,
+                    col("cpr_province_ext")
+                )
+                .when(
+                    city_match
+                    & (col("city_province_cnt") == 1),
+                    col("city_province_ext")
+                )
+                .when(
+                    city_match,
+                    col("ctr_province_ext")
+                )
+                .otherwise(lit(None))
+            )
+            """
+            region_expr = (
+                when(
+                    exact_match,
+                    col("exact_region")
+                )
+                .when(
+                    cap_match
+                    & (col("cap_region_cnt") == 1),
+                    col("cap_region")
+                )
+                .when(
+                    cap_match,
+                    col("cpr_region")
+                )
+                .when(
+                    city_match
+                    & (col("city_region_cnt") == 1),
+                    col("city_region")
+                )
+                .when(
+                    city_match,
+                    col("ctr_region")
+                )
+                .otherwise(lit(None))
+            )
+
+        df = (
+            df
+            .with_column("resolved_province", province_expr)
+            #.with_column("resolved_province_ext", province_ext_expr)
+            .with_column("resolved_region", region_expr)
+        )
+
+        df = df.select(
+            *original_columns,
+            "resolved_province",
+            #"resolved_province_ext",
+            "resolved_region",
+            "lat",
+            "lng",
         )
 
         return df
@@ -1328,25 +2315,89 @@ class DataIngestion:
             session
             ):
         """
-        Extract geographic information from the candidate job_site field.
+        Extract geographic information from the candidate job_site field and enrich
+        the candidate dataset with the most likely Italian city match.
 
-        The extraction logic is as follows:
+        Strings contained in job_site typically have the form
+        "Via Roma 10, Milano (MI)". They usually contain the province
+        abbreviation at the end and do not contain a CAP.
 
-        - Extract the province abbreviation from the end of the job_site string
-        when present (e.g. "Milano (MI)").
-        - Match the job_site province against the Italian cities reference table.
-        - Restrict city candidates to the extracted province when available.
-        - Select the most likely city match based on its position within the
-        job_site string.
-        - Enrich the candidate record with city, province, region and
-        coordinates derived from the selected match.
+        The function analyzes the job_site value and attempts to identify
+        the municipality referenced within the string.
+
+        When a province abbreviation is present (e.g. "Milano (MI)"), it is
+        extracted and used to restrict city matching to municipalities
+        belonging to that province, reducing ambiguity between cities with
+        the same or similar names.
+
+        Matching is performed against the Italian cities reference table using
+        the city_normalized column. When multiple city matches are found, the
+        best match is selected according to the following priority:
+            1. City whose occurrence ends furthest to the right in the job_site string.
+            2. Longest city name.
+            3. Alphabetical order as a deterministic tie-breaker.
+
+        Examples:
+
+            Single city match:
+                - "Via Augusto 10, Milano (MI)"
+                -> Milano
+
+            Multiple city matches in the same string:
+
+                - "Via Roma 10, Milano (MI)"
+                (both Roma and Milano match. Milano appears furthest to the right)
+                    -> Milano
+
+                - "Via Milano 10, Roma (RM)"
+                (both Milano and Roma match. Roma appears furthest to the right)
+                    -> Roma
+
+                - "Via Augusto, Bolzano Vicentino (VI)"
+                (both 'Bolzano' and 'Bolzano Vicentino' match, and one is included in the other. 
+                Bolzano Vicentino appears furthest to the right)
+                    -> Bolzano Vicentino
+
+                - "Via Augusto 10, Villanova di Camposampiero (PD)" 
+                -> Villanova di Camposampiero
+                (both 'Villanova' and 'Villanova di Camposampiero' match, and one is included in the other.)
+                Villanova di Camposampiero appearts further to the right
+                    -> Villanova di Camposampiero
+
+                Province extraction limits candidate cities to the
+                corresponding province before ranking.
+
+        Geographic attributes associated with the selected city are then added to the candidate record.
+        In particular, CAP is assigned only for cities that have a single unique CAP in the reference table.
+
+        Output columns:
+            - job_site_cap
+            - job_site_city
+            - job_site_province
+            - job_site_province_ext
+            - job_site_region
+            - job_site_lat
+            - job_site_lng
+
+        Notes:
+            - Province extraction supports formats such as:
+                * "Milano (MI)"
+                * "Milano ( MI )"
+                * "Milano MI"
+
+            - If no province can be extracted, city matching is performed
+            across all Italian provinces.
+
+            - CAP information is taken from the matched reference record and
+            may not uniquely identify the municipality when multiple CAPs
+            exist for the same city.
 
         Args:
-            session (Session): Snowpark session.
+            session (Session): Active Snowpark session.
 
         Returns:
             DataFrame: Candidate dataframe enriched with geographic information
-            extracted from the job_site field.
+            extracted from job_site.
         """
 
         config = self.config
@@ -1355,9 +2406,11 @@ class DataIngestion:
         candidate_table = config.candidate.output_cleaned_table
         italian_cities_table = config.italian_cities.output_table
 
-        df_candidate = session.table(
+        df = session.table(
             f"{database}.{schema}.{candidate_table}"
         )
+
+        original_columns = df.columns
 
         df_cities = session.table(
                 f"{database}.{schema}.{italian_cities_table}"
@@ -1379,6 +2432,25 @@ class DataIngestion:
 
 
         # ------------------------------------------------------------------
+        # Determine whether each city is associated with a unique CAP.
+        #
+        # Cities having exactly one distinct CAP can safely populate job_site_cap.
+        #
+        # Cities associated with multiple CAPs will later receive a NULL
+        # job_site_cap value to avoid selecting an arbitrary postal code.
+        # ------------------------------------------------------------------
+
+        city_caps = (
+            df_cities
+            .group_by("city_normalized")
+            .agg(
+                count_distinct("cap_lookup").alias("cap_count"),
+                min(col("cap_lookup")).alias("single_cap")
+            )
+        )
+
+
+        # ------------------------------------------------------------------
         # Extract the province abbreviation from the end of job_site.
         #
         # Supported examples:
@@ -1390,8 +2462,8 @@ class DataIngestion:
         # If no province can be extracted, the value remains NULL.
         # -----------------------------------------------------------------
 
-        df_candidate = (
-            df_candidate
+        df = (
+            df
             .with_column(
                 "job_site_province_extracted",
                 lower(
@@ -1433,7 +2505,7 @@ class DataIngestion:
         # ------------------------------------------------------------------
 
         matches = (
-            df_candidate
+            df
             .join(
                 df_cities,
                 (col("job_site_province_extracted") == col("province_lookup"))
@@ -1492,6 +2564,7 @@ class DataIngestion:
                 col("city_normalized").asc()
             )
         )
+
         best_match = (
             matches
             .with_column(
@@ -1503,17 +2576,49 @@ class DataIngestion:
 
 
         # ------------------------------------------------------------------
+        # Enrich the selected city match with CAP cardinality information.
+        #
+        # This allows distinguishing municipalities with a unique CAP from
+        # municipalities associated with multiple postal codes.
+        # ------------------------------------------------------------------
+
+        best_match = (
+            best_match
+            .join(
+                city_caps,
+                "city_normalized",
+                "left"
+            )
+        )
+
+
+        # ------------------------------------------------------------------
         # Build the enrichment dataset.
         #
-        # CAP cannot be reliably derived because a city may be associated with multiple CAP values.
+        # The matched city is always retained.
+        #
+        # CAP is populated only when the matched city is associated with a
+        # single distinct CAP in the Italian cities reference table.
+        #
+        # Examples:
+        # - Prato   -> 59100      (single CAP)      -> job_site_cap = 59100
+        # - Roma    -> many CAPs  (00118, 00119...) -> job_site_cap = NULL
+        # - Milano  -> many CAPs  (20121, 20122...) -> job_site_cap = NULL
+        #
+        # This avoids assigning an arbitrary CAP when a municipality is
+        # served by multiple postal codes.
         # ------------------------------------------------------------------
 
         extracted = (
             best_match
             .select(
                 col("candidate_id_bh"),
-                col("cap_lookup")
-                    .alias("job_site_cap"),
+                when(
+                    col("cap_count") == 1,
+                    col("single_cap")
+                )
+                .otherwise(lit(None))
+                .alias("job_site_cap"),
                 col("city_normalized")
                     .alias("job_site_city"),
                 col("province_lookup")
@@ -1536,7 +2641,7 @@ class DataIngestion:
         # ------------------------------------------------------------------
 
         df = (
-            df_candidate
+            df
             .drop("job_site_province_extracted")
             .join(
                 extracted,
@@ -1545,21 +2650,31 @@ class DataIngestion:
             )
         )
 
+        df = df.select(
+            *original_columns,
+            "job_site_cap",
+            "job_site_city",
+            "job_site_province",
+            #"job_site_province_ext",
+            "job_site_region",
+            "job_site_lat",
+            "job_site_lng"
+            )
+
         return df
 
 
     def create_geo_table(
-            self, 
+            self,
             session
             ):
         """
         Build the Italian cities reference table from the source JSON file.
 
-        The output contains one row per city-CAP combination and includes:
-        - administrative information (city, province, region)
-        - coordinates
-        - cadastral code
-        - CAP-related metadata
+        The output contains:
+        - one EXACT row for each valid (cap, city) pair
+        - one CITY_ONLY row for each city associated with multiple CAPs
+        - one CAP_ONLY row for each CAP shared by multiple cities
 
         Output columns:
             cap                 STRING
@@ -1573,17 +2688,31 @@ class DataIngestion:
             cadastral_code      STRING
             lat                 DOUBLE
             lng                 DOUBLE
+            location_type       STRING
+
+        location_type:
+            EXACT
+            CITY_ONLY
+            CAP_ONLY
 
         Args:
             session (Session): Snowpark session.
 
         Returns:
-            DataFrame: Cleaned geographic reference table.
+            DataFrame: Geographic reference table.
+        """
+
+        """
+        Three caps are missing for Castegnero, Nanto and Lirio
+        Il Codice di Avviamento Postale (CAP) di Castegnero è 36024 (dopo la fusione con il comune di Nanto nel nuovo comune di Castegnero Nanto, istituito il 21 febbraio 2026). 
+        In precedenza il CAP era 36020.
+
+        Il CAP di Lirio (frazione del comune di Montalto Pavese in provincia di Pavia) è 27040.
+        Nota amministrativa: Dal 31 gennaio 2026, l'ex comune di Lirio è stato ufficialmente incorporato nel comune di Montalto Pavese
         """
 
         config = self.config
         italian_cities_file = config.italian_cities.input_file
-
 
         # ------------------------------------------------------------------
         # Load municipalities from the source JSON file.
@@ -1592,16 +2721,15 @@ class DataIngestion:
         with open(italian_cities_file, "r", encoding="utf-8") as f:
             comuni = json.load(f)
 
-
         # ------------------------------------------------------------------
         # Transform source records into a flat structure.
         #
         # A municipality may have multiple CAP values.
-        # Generate one output row per CAP so that lookups can be performed
-        # directly on a single CAP value.
+        # Generate one row per (cap, city) pair.
         # ------------------------------------------------------------------
 
         rows = []
+
         for comune in comuni:
 
             raw_caps = comune.get("cap") or []
@@ -1612,21 +2740,17 @@ class DataIngestion:
             ))
 
             normalized_caps = [
-                cap for cap in normalized_caps
+                cap
+                for cap in normalized_caps
                 if cap is not None
             ]
-
-            first_cap = (
-                normalized_caps[0]
-                if len(normalized_caps) > 0
-                else None
-            )
 
             coordinates = comune.get("coordinate") or {}
             regione = comune.get("regione") or {}
             provincia = comune.get("provincia") or {}
 
             for cap in normalized_caps or [None]:
+
                 rows.append({
                     "cap": cap,
                     "city": comune.get("nome"),
@@ -1638,23 +2762,8 @@ class DataIngestion:
                     "cadastral_code": comune.get("codiceCatastale"),
                     "lat": coordinates.get("lat"),
                     "lng": coordinates.get("lng"),
+                    "location_type": "EXACT",
                 })
-
-            """
-            rows.append({
-                "city": comune.get("nome"),
-                "province": comune.get("sigla"),
-                "cap": first_cap,
-                "cap_list": normalized_caps,
-                "has_multiple_caps": len(normalized_caps) > 1,
-                "lat": coordinates.get("lat"),
-                "lng": coordinates.get("lng"),
-                "is_capoluogo": comune.get("capoluogo"),
-                "region": regione.get("nome"),
-                "province_ext": provincia.get("nome"),
-            })
-            """
-
 
         # ------------------------------------------------------------------
         # Define the Snowpark schema.
@@ -1662,7 +2771,6 @@ class DataIngestion:
 
         schema = StructType([
             StructField("cap", StringType()),
-            #StructField("cap_list", ArrayType(StringType())),
             StructField("city", StringType()),
             StructField("province", StringType()),
             StructField("province_ext", StringType()),
@@ -1672,6 +2780,7 @@ class DataIngestion:
             StructField("cadastral_code", StringType()),
             StructField("lat", DoubleType()),
             StructField("lng", DoubleType()),
+            StructField("location_type", StringType()),
         ])
 
         df = session.create_dataframe(
@@ -1679,33 +2788,31 @@ class DataIngestion:
             schema=schema
         )
 
-
         # ------------------------------------------------------------------
         # Build normalized lookup fields used during city matching.
         # ------------------------------------------------------------------
 
-        normalize_city_udf = self.build_normalize_city_udf()
+        normalize_city_udf = self._build_normalize_city_udf()
 
         df = (
             df
             .with_column(
                 "CITY_NORMALIZED",
                 normalize_city_udf(col("CITY"))
-                )
+            )
             .with_column(
                 "PROVINCE",
                 lower(col("PROVINCE"))
-                )
+            )
             .with_column(
                 "PROVINCE_EXT",
                 normalize_city_udf(col("PROVINCE_EXT"))
-            )            
+            )
             .with_column(
                 "REGION",
                 normalize_city_udf(col("REGION"))
             )
         )
-
 
         # ------------------------------------------------------------------
         # Standardize string fields.
@@ -1714,7 +2821,7 @@ class DataIngestion:
         # - Trim leading and trailing spaces.
         # - Convert empty strings to NULL.
         # ------------------------------------------------------------------
-        
+
         string_cols = [
             f.name
             for f in df.schema.fields
@@ -1739,7 +2846,6 @@ class DataIngestion:
                 ).otherwise(cleaned)
             )
 
-
         # ------------------------------------------------------------------
         # Validate geographic coordinates.
         #
@@ -1747,7 +2853,7 @@ class DataIngestion:
         # Longitude range: [-180, 180]
         #
         # Missing or invalid values are replaced with NaN.
-        # -----------------------------------------------------------------
+        # ------------------------------------------------------------------
 
         df = (
             df
@@ -1779,112 +2885,436 @@ class DataIngestion:
             )
         )
 
+        # ------------------------------------------------------------------
+        # Add CITY_ONLY rows.
+        #
+        # For each city associated with multiple CAPs add:
+        #
+        #     (NULL, city)
+        #
+        # Coordinates are the average coordinates of all rows
+        # associated with the city.
+        # Other columns such as province and region are populated only if all caps associated to the city share the same value
+        # ------------------------------------------------------------------
+
+        city_only_df = (
+            df
+            .group_by(
+                "city",
+                "city_normalized"
+            )
+            .agg(
+                count_distinct("cap").alias("cap_count"),
+
+                count_distinct("province").alias("province_count"),
+                min("province").alias("province_value"),
+
+                count_distinct("province_ext").alias("province_ext_count"),
+                min("province_ext").alias("province_ext_value"),
+
+                count_distinct("region").alias("region_count"),
+                min("region").alias("region_value"),
+
+                count_distinct("cadastral_code").alias("cadastral_count"),
+                min("cadastral_code").alias("cadastral_value"),
+
+                count_distinct("is_capoluogo").alias("capoluogo_count"),
+                min("is_capoluogo").alias("capoluogo_value"),
+
+                count_distinct("has_multiple_caps").alias("multiple_caps_count"),
+                min("has_multiple_caps").alias("multiple_caps_value"),
+
+                avg("lat").alias("lat"),
+                avg("lng").alias("lng")
+            )
+            .filter(col("cap_count") > 1)
+            .select(
+                lit(None).cast(StringType()).alias("cap"),
+
+                col("city"),
+                col("city_normalized"),
+
+                when(
+                    col("province_count") == 1,
+                    col("province_value")
+                ).otherwise(lit(None)).alias("province"),
+
+                when(
+                    col("province_ext_count") == 1,
+                    col("province_ext_value")
+                ).otherwise(lit(None)).alias("province_ext"),
+
+                when(
+                    col("region_count") == 1,
+                    col("region_value")
+                ).otherwise(lit(None)).alias("region"),
+
+                when(
+                    col("multiple_caps_count") == 1,
+                    col("multiple_caps_value")
+                ).otherwise(lit(None)).alias("has_multiple_caps"),
+
+                when(
+                    col("capoluogo_count") == 1,
+                    col("capoluogo_value")
+                ).otherwise(lit(None)).alias("is_capoluogo"),
+
+                when(
+                    col("cadastral_count") == 1,
+                    col("cadastral_value")
+                ).otherwise(lit(None)).alias("cadastral_code"),
+
+                col("lat"),
+                col("lng"),
+
+                lit("CITY_ONLY").alias("location_type")
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Add CAP_ONLY rows.
+        #
+        # For each CAP associated with multiple cities add:
+        #
+        #     (cap, NULL)
+        #
+        # Coordinates are the average coordinates of all rows
+        # associated with the CAP.
+        # Other columns such as province and region are populated only if all cities associated to the cap share the same value
+        # ------------------------------------------------------------------
+
+        cap_only_df = (
+            df
+            .group_by("cap")
+            .agg(
+                count_distinct("city").alias("city_count"),
+
+                count_distinct("province").alias("province_count"),
+                min("province").alias("province_value"),
+
+                count_distinct("province_ext").alias("province_ext_count"),
+                min("province_ext").alias("province_ext_value"),
+
+                count_distinct("region").alias("region_count"),
+                min("region").alias("region_value"),
+
+                count_distinct("cadastral_code").alias("cadastral_count"),
+                min("cadastral_code").alias("cadastral_value"),
+
+                count_distinct("is_capoluogo").alias("capoluogo_count"),
+                min("is_capoluogo").alias("capoluogo_value"),
+
+                count_distinct("has_multiple_caps").alias("multiple_caps_count"),
+                min("has_multiple_caps").alias("multiple_caps_value"),
+
+                avg("lat").alias("lat"),
+                avg("lng").alias("lng")
+            )
+            .filter(
+                col("cap").is_not_null()
+                & (col("city_count") > 1)
+            )
+            .select(
+                col("cap"),
+
+                lit(None).cast(StringType()).alias("city"),
+                lit(None).cast(StringType()).alias("city_normalized"),
+
+                when(
+                    col("province_count") == 1,
+                    col("province_value")
+                ).otherwise(lit(None)).alias("province"),
+
+                when(
+                    col("province_ext_count") == 1,
+                    col("province_ext_value")
+                ).otherwise(lit(None)).alias("province_ext"),
+
+                when(
+                    col("region_count") == 1,
+                    col("region_value")
+                ).otherwise(lit(None)).alias("region"),
+
+                when(
+                    col("multiple_caps_count") == 1,
+                    col("multiple_caps_value")
+                ).otherwise(lit(None)).alias("has_multiple_caps"),
+
+                when(
+                    col("capoluogo_count") == 1,
+                    col("capoluogo_value")
+                ).otherwise(lit(None)).alias("is_capoluogo"),
+
+                when(
+                    col("cadastral_count") == 1,
+                    col("cadastral_value")
+                ).otherwise(lit(None)).alias("cadastral_code"),
+
+                col("lat"),
+                col("lng"),
+
+                lit("CAP_ONLY").alias("location_type")
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Put toghether all the rows.
+        # ------------------------------------------------------------------
+
+        city_only_df = city_only_df.select(df.columns)
+        cap_only_df = cap_only_df.select(df.columns)
+
+        df = (
+            df
+            .union_by_name(city_only_df)
+            .union_by_name(cap_only_df)
+        )
+
+        # ------------------------------------------------------------------
+        # Reorder columns.
+        # ------------------------------------------------------------------
+
+        df = df.select(
+            "location_type",
+            "cap",
+            "city",
+            "city_normalized",
+            "province",
+            "province_ext",
+            "region",
+            "has_multiple_caps",
+            "is_capoluogo",
+            "cadastral_code",
+            "lat",
+            "lng",
+        )
+
         return df
 
 
-    def build_normalize_city_udf(
-            self
+    def _haversine_expr(
+            self,
+            lat1_column: str,
+            lng1_column: str,
+            lat2_column: str,
+            lng2_column: str
             ):
-        """
-        Build a UDF that converts geographic names into a normalized format
-        suitable for matching and lookup operations.
+        """Builds an expression that computes the Haversine distance in km between two coordinate pairs
 
-        The normalization logic:
-        - converts text to lowercase
-        - removes accents and diacritics
-        - replaces punctuation and separators with spaces
-        - collapses consecutive spaces
-        - trims leading and trailing spaces
-        - converts empty strings to NULL
-
-        Examples:
-            "Milàno"                    -> "milano"
-            "Reggio-Emilia"             -> "reggio emilia"
-            "L'Aquila"                  -> "l aquila"
-            "  Villanova   d'Ardenghi " -> "villanova d ardenghi"
+        Args:
+            lat1_column (string): source latitude column name
+            lng1_column (string): source longitude column name
+            lat2_column (string): destination latitude column name
+            lng2_column (string): destination longitude column name
 
         Returns:
-            UserDefinedFunction: Snowpark UDF returning a normalized string.
+            expr (Snowpark expression): Haversine distance in km
         """
 
-        def normalize_city(city: str) -> str:
+        lat1 = radians(col(lat1_column))
+        lng1 = radians(col(lng1_column))
+        lat2 = radians(col(lat2_column))
+        lng2 = radians(col(lng2_column))
 
-            import unicodedata
+        dlat = lat2 - lat1
+        dlng = lng2 - lng1
 
-            if city is None:
-                return None
+        a = (
+            sin(dlat / 2) * sin(dlat / 2)
+            + cos(lat1)
+            * cos(lat2)
+            * sin(dlng / 2)
+            * sin(dlng / 2)
+        )
 
-            # --------------------------------------------------------------
-            # Remove leading/trailing spaces and convert empty strings
-            # to NULL.
-            # --------------------------------------------------------------
+        expr = lit(6371) * (lit(2) * asin(sqrt(a)))
 
-            city = city.strip()
-            if not city:
-                return None
+        return expr
 
-            # --------------------------------------------------------------
-            # Normalize Unicode characters and convert to lowercase.
-            #
-            # Example:
-            # "À" -> "à"
-            # --------------------------------------------------------------
-            city = unicodedata.normalize(
-                "NFKD", 
-                city.casefold()
+
+    def build_geo_distance_table(
+        self,
+        session,
+        max_distance_km=100
+    ):
+        """
+        Builds a geographic lookup table containing all pairs of locations that
+        are within a specified distance radius.
+
+        This table is used during candidate/job matching to quickly retrieve
+        nearby locations without recalculating geographic distances at runtime.
+
+        The source ITALIAN_CITIES table contains one row for each available
+        location and supports three location granularities:
+
+            (cap, city): Exact location corresponding to a specific CAP/city pair.
+
+            (NULL, city): Generic location representing a city associated with multiple CAPs. 
+                Latitude and longitude correspond to the city centroid.
+
+            (cap, NULL): Generic location representing a CAP shared by multiple cities.
+                Latitude and longitude correspond to the CAP centroid.
+
+        
+        Including the generic rows makes it possible to compute distances even
+        when only CAP or city information is available.
+
+        The resulting table contains:
+            from_cap
+            from_city
+            to_cap
+            to_city
+            distance_km
+
+        Rows are generated for all location pairs whose distance is less than
+        or equal to max_distance_km. Both directions are stored:
+            A -> B
+            B -> A
+
+        This simplifies downstream joins between candidates and job orders by
+        eliminating the need to reverse lookup directions.
+
+        To reduce computational cost, location pairs are first filtered using
+        a latitude/longitude bounding box and only then evaluated using the
+        Haversine formula.
+
+        Args:
+            session (Session): Snowpark session.
+            max_distance_km (int): Maximum distance allowed between two locations.
+
+        Returns:
+            DataFrame: Distance reference table containing all qualifying
+                location pairs and their distance in kilometers.
+        DataFrame: Geo distance table.
+
+        """
+
+        # Create target table with clustering key
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        italian_cities_table = config.italian_cities.output_table
+        distance_table = config.italian_cities.distance_table
+
+
+        # ------------------------------------------------------------------
+        # Create output table and define cluster
+        # ------------------------------------------------------------------
+
+        session.sql(f"""
+            DROP TABLE IF EXISTS {database}.{schema}.{config.italian_cities.distance_table}
+        """).collect()
+
+        session.sql(f"""
+            CREATE OR REPLACE TABLE {database}.{schema}.{config.italian_cities.distance_table} (
+                from_cap VARCHAR,
+                from_city VARCHAR,
+                to_cap VARCHAR,
+                to_city VARCHAR,
+                distance_km FLOAT
+            )
+            CLUSTER BY (from_cap, from_city)
+        """).collect()
+
+
+        # ------------------------------------------------------------------
+        # Loads from/to locations
+        # ------------------------------------------------------------------
+
+        ic = (
+            session.table(f"{database}.{schema}.{italian_cities_table}")
+            .select(
+                col("cap"),
+                col("city_normalized"),
+                col("lat"),
+                col("lng")
+            )
+            .filter(
+                col("lat").is_not_null()
+                & col("lng").is_not_null()
+            )
+            .cache_result()
+        )
+
+        from_df = (
+            ic.select(
+                col("cap").alias("from_cap"),
+                col("city_normalized").alias("from_city"),
+                col("lat").alias("from_lat"),
+                col("lng").alias("from_lng")
+            )
+        )
+
+        to_df = (
+            ic.select(
+                col("cap").alias("to_cap"),
+                col("city_normalized").alias("to_city"),
+                col("lat").alias("to_lat"),
+                col("lng").alias("to_lng")
+            )
+        )
+
+
+        # ------------------------------------------------------------------
+        # Build geographic distance expression and spatial filters
+        # ------------------------------------------------------------------
+
+        max_lat_delta = max_distance_km / 111.0
+        max_lng_delta = max_distance_km / 111.0
+
+        distance_expr = self._haversine_expr(
+            "from_lat",
+            "from_lng",
+            "to_lat",
+            "to_lng"
+        )
+
+
+        # ------------------------------------------------------------------
+        # Generate location pairs and keep only nearby locations
+        # ------------------------------------------------------------------
+
+        result = (
+            from_df
+            .cross_join(to_df)
+            .filter(
+                ~(
+                    col("from_cap").eqNullSafe(col("to_cap"))
+                    &
+                    col("from_city").eqNullSafe(col("to_city"))
                 )
-
-
-            # --------------------------------------------------------------
-            # Remove accents and diacritical marks.
-            #
-            # Example:
-            # "milàno" -> "milano"
-            # --------------------------------------------------------------
-
-            city = "".join(
-                char for char in city
-                if not unicodedata.combining(char)
             )
-
-
-            # --------------------------------------------------------------
-            # Replace punctuation and non-alphanumeric characters
-            # with spaces.
-            #
-            # Examples:
-            # "l'aquila" -> "l aquila"
-            # "reggio-emilia" -> "reggio emilia"
-            # -----------
-
-            city = re.sub(
-                r"[^a-z0-9]+", 
-                " ", 
-                city)
-
-
-            # --------------------------------------------------------------
-            # Collapse consecutive spaces and trim the result.
-            # --------------------------------------------------------------
-
-            city = re.sub(
-                r"\s+", 
-                " ", 
-                city).strip()
-
-            return city
-        
-        return udf(
-            normalize_city, 
-            return_type=StringType(), 
-            input_types=[StringType()]
+            .filter(
+                abs(col("from_lat") - col("to_lat"))
+                <= lit(max_lat_delta)
             )
-        
+            .filter(
+                abs(col("from_lng") - col("to_lng"))
+                <= lit(max_lng_delta)
+            )
+            .with_column("distance_km", distance_expr)
+            .filter(col("distance_km") <= lit(max_distance_km))
+            .select(
+                col("from_cap"),
+                col("from_city"),
+                col("to_cap"),
+                col("to_city"),
+                round(col("distance_km"), 1).alias("distance_km")
+            )
+            .sort(
+                col("from_cap"),
+                col("from_city")
+            )
+        )
+
+        return result
 
     def write_table(
             self, 
             df, 
-            table_name = 'output_table'
+            table_name = "output_table",
+            mode = "overwrite"
             ):
         """Write a dataframe to a Snowflake table.
 
@@ -1895,7 +3325,7 @@ class DataIngestion:
 
         df.write.save_as_table(
             table_name, 
-            mode="overwrite"
+            mode=mode
             )
         
         logger.info(f"Table {table_name} successfully written")

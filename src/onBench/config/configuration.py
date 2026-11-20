@@ -80,6 +80,7 @@ class ConfigurationManager:
             italian_cities=ItalianCitiesIngestionConfig(
                 input_file=config.italian_cities.input_file,
                 output_table=config.italian_cities.output_table,
+                distance_table=config.italian_cities.distance_table
             ),
             llm=LLMConfig(
                 model=config.llm.model,
