@@ -3203,11 +3203,11 @@ class DataIngestion:
         # ------------------------------------------------------------------
 
         session.sql(f"""
-            DROP TABLE IF EXISTS {database}.{schema}.{config.italian_cities.distance_table}
+            DROP TABLE IF EXISTS {database}.{schema}.{distance_table}
         """).collect()
 
         session.sql(f"""
-            CREATE OR REPLACE TABLE {database}.{schema}.{config.italian_cities.distance_table} (
+            CREATE OR REPLACE TABLE {database}.{schema}.{distance_table} (
                 from_cap VARCHAR,
                 from_city VARCHAR,
                 to_cap VARCHAR,
@@ -3309,6 +3309,256 @@ class DataIngestion:
         )
 
         return result
+
+
+    def build_candidate_joborder_matches(
+        self,
+        session
+    ):
+        """
+        Builds a geographic candidate-joborder matching table using the precomputed location distance lookup.
+
+        ==============
+        Output table will contain:
+            - candidate_id_bh
+            - joborder_id_bh
+            - distance_main
+            - distance_job_site
+
+        Input datasets
+
+        Candidate tables must contain:
+            - candidate_id_bh
+            - resolved_cap
+            - resolved_city
+            - job_site_cap
+            - job_site_city
+        Joborder tables must contain:
+            - joborder_id_bh
+            - resolved_cap
+            - resolved_city
+        LOCATION_DISTANCE table must contain:
+            - from_cap
+            - from_city
+            - to_cap
+            - to_city
+            - distance_km
+
+        
+        ==============
+        Candidate locations are represented by:
+            - (resolved_cap, resolved_city):
+                Candidate's main/current location.
+            - (job_site_cap, job_site_city):
+                Candidate's most recent job location.
+
+        Joborder locations are represented by:
+            - (resolved_cap, resolved_city):
+                Joborder's main location.
+
+        Geographic proximity is determined through the LOCATION_DISTANCE table, which already contains all location pairs within 100 km.
+
+        LOCATION_DISTANCE supports the following location granularities:
+            (cap, city)
+                Exact location.
+            (NULL, city)
+                Generic location representing a city associated with multiple CAPs.
+            (cap, NULL)
+                Generic location representing a CAP shared by multiple municipalities.
+
+        Since NULL is treated as a valid location component, all location comparisons are performed using null-safe equality.
+
+        A candidate-joborder pair is considered a geographic match when at least one of the following conditions is satisfied:
+            1. Candidate main location is within 100 km of the joborder location.
+            2. Candidate last job location is within 100 km of the joborder location.
+
+        The resulting table contains at most one row per (candidate_id_bh, joborder_id_bh) pair and exposes the distance
+        associated with each matching criterion independently.
+
+
+        Args:
+            session (Session): Snowflake session.
+
+        Returns:
+            DataFrame: candidate-joborder match dataframe.  
+        """
+
+        """
+        How to check whether it's working:
+
+        select c.candidate_id_bh, c.resolved_cap, c.resolved_city, j.joborder_id_bh, j.resolved_cap, j.resolved_city, m.*
+        from MPG_IT_ONBENCH_TEST_CANDIDATE_JOBORDER_MATCH m
+        left join MPG_IT_ONBENCH_TEST_CANDIDATE_CLEANED c on c.candidate_id_bh = m.candidate_id_bh
+        left join MPG_IT_ONBENCH_TEST_JOBORDER_CLEANED j on j.joborder_id_bh = m.joborder_id_bh
+        where distance_main < 5 and distance_job_site < 5
+        order by distance_main desc
+        """
+
+
+        config = self.config
+        database = config.database
+        schema = config.output_schema
+        candidate_table = config.candidate.output_cleaned_table
+        joborder_table = config.joborder.output_cleaned_table
+        distance_table = config.italian_cities.distance_table
+
+        candidate_df = session.table(
+            f"{database}.{schema}.{candidate_table}"
+        )
+
+        joborder_df = session.table(
+            f"{database}.{schema}.{joborder_table}"
+        )
+
+        location_distance_df = session.table(
+            f"{database}.{schema}.{distance_table}"
+        )
+
+
+        # ==========================================================
+        # Standardize candidate and joborder location columns
+        # ==========================================================
+
+        candidate_main_df = (
+            candidate_df
+            .select(
+                "candidate_id_bh",
+                "resolved_cap",
+                "resolved_city"
+            )
+            .with_column_renamed("resolved_cap", "candidate_cap")
+            .with_column_renamed("resolved_city", "candidate_city")
+        )
+
+        candidate_job_site_df = (
+            candidate_df
+            .select(
+                "candidate_id_bh",
+                "job_site_cap",
+                "job_site_city"
+            )
+            .with_column_renamed("job_site_cap", "candidate_job_site_cap")
+            .with_column_renamed("job_site_city", "candidate_job_site_city")
+        )
+
+        joborder_location_df = (
+            joborder_df
+            .select(
+                "joborder_id_bh",
+                "resolved_cap",
+                "resolved_city"
+            )
+            .with_column_renamed("resolved_cap", "joborder_cap")
+            .with_column_renamed("resolved_city", "joborder_city")
+        )
+
+
+        # ==========================================================
+        # Candidate main location -> Joborder location matches
+        # ==========================================================
+
+        main_match_df = (
+            candidate_main_df
+            .join(
+                location_distance_df,
+                (
+                    col("candidate_cap").eqNullSafe(col("from_cap"))
+                )
+                &
+                (
+                    col("candidate_city").eqNullSafe(col("from_city"))
+                ),
+                how="inner"
+            )
+            .join(
+                joborder_location_df,
+                (
+                    col("joborder_cap").eqNullSafe(col("to_cap"))
+                )
+                &
+                (
+                    col("joborder_city").eqNullSafe(col("to_city"))
+                ),
+                how="inner"
+            )
+            .select(
+                "candidate_id_bh",
+                "joborder_id_bh",
+                col("distance_km").alias("distance_main")
+            )
+        )
+
+        # ==========================================================
+        # Candidate job-site location -> Joborder location matches
+        # ==========================================================
+
+        job_site_match_df = (
+            candidate_job_site_df
+            .join(
+                location_distance_df,
+                (
+                    col("candidate_job_site_cap").eqNullSafe(col("from_cap"))
+                )
+                &
+                (
+                    col("candidate_job_site_city").eqNullSafe(col("from_city"))
+                ),
+                how="inner"
+            )
+            .join(
+                joborder_location_df,
+                (
+                    col("joborder_cap").eqNullSafe(col("to_cap"))
+                )
+                &
+                (
+                    col("joborder_city").eqNullSafe(col("to_city"))
+                ),
+                how="inner"
+            )
+            .select(
+                "candidate_id_bh",
+                "joborder_id_bh",
+                col("distance_km").alias("distance_job_site")
+            )
+        )
+
+
+        # ==========================================================
+        # Merge main-location and job-site matches
+        # ==========================================================
+
+        result = (
+            main_match_df
+            .join(
+                job_site_match_df,
+                (
+                    main_match_df.col("candidate_id_bh")
+                    == job_site_match_df.col("candidate_id_bh")
+                )
+                &
+                (
+                    main_match_df.col("joborder_id_bh")
+                    == job_site_match_df.col("joborder_id_bh")
+                ),
+                how="full"
+            )
+            .select(
+                coalesce(
+                    main_match_df.col("candidate_id_bh"),
+                    job_site_match_df.col("candidate_id_bh")
+                ).alias("candidate_id_bh"),
+                coalesce(
+                    main_match_df.col("joborder_id_bh"),
+                    job_site_match_df.col("joborder_id_bh")
+                ).alias("joborder_id_bh"),
+                col("distance_main"),
+                col("distance_job_site")
+            )
+        )
+
+        return result
+
 
     def write_table(
             self, 

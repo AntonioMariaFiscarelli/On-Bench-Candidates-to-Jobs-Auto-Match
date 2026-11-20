@@ -28,12 +28,13 @@ class DataIngestionTrainingPipeline:
         data_ingestion = DataIngestion(config=data_ingestion_config, domain_config=domain_config)
 
 
-
+        """
         df = data_ingestion.create_geo_table(session)
         data_ingestion.write_table(df, data_ingestion.config.italian_cities.output_table)
         df = data_ingestion.build_geo_distance_table(session)
         data_ingestion.write_table(df, data_ingestion.config.italian_cities.distance_table, mode = "append") 
-        
+        """
+
         
         #df = data_ingestion.read_table_joborder(session)
         #data_ingestion.write_table(df, data_ingestion.config.joborder.output_table)
@@ -42,11 +43,11 @@ class DataIngestionTrainingPipeline:
         df = data_ingestion.resolve_location_joborder(session)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         df = data_ingestion.enrich_location_joborder(session)
-        df = df.limit(100)
+        #df = df.limit(100)
         data_ingestion.write_table(df, data_ingestion.config.joborder.output_cleaned_table)
         
         
-        
+        """
         #df = data_ingestion.read_table_candidate(session)
         #data_ingestion.write_table(df, data_ingestion.config.candidate.output_table)
         df = data_ingestion.clean_table_candidate(session)
@@ -57,7 +58,11 @@ class DataIngestionTrainingPipeline:
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
         df = data_ingestion.extract_geo_info_job_site(session)
         data_ingestion.write_table(df, data_ingestion.config.candidate.output_cleaned_table)
-        
+        """
+
+        df = data_ingestion.build_candidate_joborder_matches(session)
+        data_ingestion.write_table(df, "MPG_IT_ONBENCH_TEST_CANDIDATE_JOBORDER_MATCH")
+
 
 
 
